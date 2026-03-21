@@ -1,0 +1,241 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* ── Begin PBXBuildFile section ────────────────────────────────────── */
+		A001 /* FakeIrisXEFramebuffer.cpp */ = {isa = PBXBuildFile; fileRef = F001; };
+		A002 /* FakeIrisXEGuC.cpp */ = {isa = PBXBuildFile; fileRef = F002; };
+		A003 /* FakeIrisXEExeclist.cpp */ = {isa = PBXBuildFile; fileRef = F003; };
+		A004 /* FakeIrisXEGEM.cpp */ = {isa = PBXBuildFile; fileRef = F004; };
+		A005 /* FakeIrisXEAccelerator.cpp */ = {isa = PBXBuildFile; fileRef = F005; };
+		A006 /* stubs.cpp */ = {isa = PBXBuildFile; fileRef = F006; };
+		A007 /* embedded_firmware.cpp */ = {isa = PBXBuildFile; fileRef = F007; };
+		A008 /* Info.plist */ = {isa = PBXBuildFile; fileRef = F008; };
+/* ── End PBXBuildFile section ──────────────────────────────────────── */
+
+/* ── Begin PBXFileReference section ────────────────────────────────── */
+		F001 /* FakeIrisXEFramebuffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FakeIrisXEFramebuffer.cpp; sourceTree = "<group>"; };
+		F002 /* FakeIrisXEGuC.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FakeIrisXEGuC.cpp; sourceTree = "<group>"; };
+		F003 /* FakeIrisXEExeclist.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FakeIrisXEExeclist.cpp; sourceTree = "<group>"; };
+		F004 /* FakeIrisXEGEM.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FakeIrisXEGEM.cpp; sourceTree = "<group>"; };
+		F005 /* FakeIrisXEAccelerator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FakeIrisXEAccelerator.cpp; sourceTree = "<group>"; };
+		F006 /* stubs.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = stubs.cpp; sourceTree = "<group>"; };
+		F007 /* embedded_firmware.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = embedded_firmware.cpp; sourceTree = "<group>"; };
+		F008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "FakeIrisXEFramebuffer.kext/Contents/Info.plist"; sourceTree = "<group>"; };
+		F009 /* FakeIrisXEFramebuffer.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEFramebuffer.hpp; sourceTree = "<group>"; };
+		F010 /* FakeIrisXEGuC.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEGuC.hpp; sourceTree = "<group>"; };
+		F011 /* FakeIrisXEExeclist.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEExeclist.hpp; sourceTree = "<group>"; };
+		F012 /* FakeIrisXEGEM.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEGEM.hpp; sourceTree = "<group>"; };
+		F013 /* FakeIrisXEAccelerator.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEAccelerator.hpp; sourceTree = "<group>"; };
+		F014 /* FakeIrisXEAcceleratorUserClient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEAcceleratorUserClient.hpp; sourceTree = "<group>"; };
+		F015 /* FakeIrisXEAccelDevice.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEAccelDevice.hpp; sourceTree = "<group>"; };
+		F016 /* FakeIrisXEAccelContext.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEAccelContext.hpp; sourceTree = "<group>"; };
+		F017 /* FakeIrisXESharedUserClient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXESharedUserClient.hpp; sourceTree = "<group>"; };
+		F018 /* FakeIrisXEBacklight.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = FakeIrisXEBacklight.hpp; sourceTree = "<group>"; };
+		F019 /* i915_reg.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = i915_reg.h; sourceTree = "<group>"; };
+		F020 /* embedded_firmware.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = embedded_firmware.h; sourceTree = "<group>"; };
+		F021 /* FakeIrisXERing.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FakeIrisXERing.h; sourceTree = "<group>"; };
+		F022 /* FakeIrisXEAccelShared.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FakeIrisXEAccelShared.h; sourceTree = "<group>"; };
+		PROD /* FakeIrisXEFramebuffer.kext */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FakeIrisXEFramebuffer.kext; sourceTree = BUILT_PRODUCTS_DIR; };
+/* ── End PBXFileReference section ──────────────────────────────────── */
+
+/* ── Begin PBXGroup section ─────────────────────────────────────────── */
+		GRP_ROOT = {
+			isa = PBXGroup;
+			children = (
+				GRP_SRC,
+				GRP_HDR,
+				F008,
+				PROD,
+			);
+			sourceTree = "<group>";
+		};
+		GRP_SRC = {
+			isa = PBXGroup;
+			name = "Source Files";
+			children = (
+				F001, F002, F003, F004, F005, F006, F007,
+			);
+			sourceTree = "<group>";
+		};
+		GRP_HDR = {
+			isa = PBXGroup;
+			name = "Header Files";
+			children = (
+				F009, F010, F011, F012, F013, F014, F015,
+				F016, F017, F018, F019, F020, F021, F022,
+			);
+			sourceTree = "<group>";
+		};
+/* ── End PBXGroup section ───────────────────────────────────────────── */
+
+/* ── Begin PBXSourcesBuildPhase section ────────────────────────────── */
+		BP_SOURCES = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A001, A002, A003, A004, A005, A006, A007,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* ── End PBXSourcesBuildPhase section ──────────────────────────────── */
+
+/* ── Begin PBXCopyFilesBuildPhase section ───────────────────────────── */
+		BP_COPY_INFOPLIST = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 16;
+			files = ( A008 );
+			name = "Copy Info.plist";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* ── End PBXCopyFilesBuildPhase section ─────────────────────────────── */
+
+/* ── Begin XCBuildConfiguration section ─────────────────────────────── */
+		BC_DEBUG = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				/* ── Target type ────────────────────────── */
+				MACH_O_TYPE = mh_execute;
+				WRAPPER_EXTENSION = kext;
+				PRODUCT_NAME = FakeIrisXEFramebuffer;
+
+				/* ── SDK and architecture ───────────────── */
+				SDKROOT = macosx;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				ARCHS = x86_64;
+				SUPPORTED_PLATFORMS = macosx;
+
+				/* ── Language ────────────────────────────── */
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				/* libstdc++ removed; libc++ is used in kernel builds via -mkernel */
+
+				/* ── Critical kernel extension flags ────── */
+				/* -fapple-kext: enables Apple kext C++ ABI (vtable dispatch, no RTTI/exceptions) */
+				/* -mkernel: kernel mode — no user-space libs, uses kernel libc++ */
+				OTHER_CFLAGS = "-fapple-kext -mkernel -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT -DDEBUG=1";
+				OTHER_CPLUSPLUSFLAGS = "-fapple-kext -mkernel -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT -DDEBUG=1 -fno-exceptions -fno-rtti";
+				OTHER_LDFLAGS = "-Xlinker -kext";
+
+				/* No position-independent executable in kernel */
+				GCC_ENABLE_PASCAL_STRINGS = YES;
+				GENERATE_MASTER_OBJECT_FILE = YES;
+				STRIP_STYLE = debugging;
+
+				/* ── Warnings ────────────────────────────── */
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				CLANG_WARN_IMPLICIT_SIGN_CONVERSION = NO;
+
+				/* ── Hardening (off for kexts) ───────────── */
+				ENABLE_HARDENED_RUNTIME = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = "";
+
+				/* ── Info.plist ──────────────────────────── */
+				INFOPLIST_FILE = "FakeIrisXEFramebuffer.kext/Contents/Info.plist";
+
+				/* ── Output ──────────────────────────────── */
+				CONFIGURATION_BUILD_DIR = "$(BUILD_DIR)/$(CONFIGURATION)";
+
+				/* ── Debug-specific ─────────────────────── */
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ONLY_ACTIVE_ARCH = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+			};
+			name = Debug;
+		};
+		BC_RELEASE = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACH_O_TYPE = mh_execute;
+				WRAPPER_EXTENSION = kext;
+				PRODUCT_NAME = FakeIrisXEFramebuffer;
+				SDKROOT = macosx;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				ARCHS = x86_64;
+				SUPPORTED_PLATFORMS = macosx;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				/* libstdc++ removed; libc++ is used in kernel builds via -mkernel */
+				OTHER_CFLAGS = "-fapple-kext -mkernel -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT";
+				OTHER_CPLUSPLUSFLAGS = "-fapple-kext -mkernel -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT -fno-exceptions -fno-rtti";
+				OTHER_LDFLAGS = "-Xlinker -kext";
+				GENERATE_MASTER_OBJECT_FILE = YES;
+				STRIP_STYLE = debugging;
+				ENABLE_HARDENED_RUNTIME = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = "";
+				INFOPLIST_FILE = "FakeIrisXEFramebuffer.kext/Contents/Info.plist";
+				CONFIGURATION_BUILD_DIR = "$(BUILD_DIR)/$(CONFIGURATION)";
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_OPTIMIZATION_LEVEL = s;
+			};
+			name = Release;
+		};
+/* ── End XCBuildConfiguration section ───────────────────────────────── */
+
+/* ── Begin XCConfigurationList section ──────────────────────────────── */
+		CL_PROJECT = {
+			isa = XCConfigurationList;
+			buildConfigurations = ( BC_DEBUG, BC_RELEASE );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CL_TARGET = {
+			isa = XCConfigurationList;
+			buildConfigurations = ( BC_DEBUG, BC_RELEASE );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* ── End XCConfigurationList section ────────────────────────────────── */
+
+/* ── Begin PBXNativeTarget section ──────────────────────────────────── */
+		TARGET = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CL_TARGET;
+			buildPhases = ( BP_SOURCES, BP_COPY_INFOPLIST );
+			buildRules = ();
+			dependencies = ();
+			name = FakeIrisXEFramebuffer;
+			productName = FakeIrisXEFramebuffer;
+			productReference = PROD;
+			productType = "com.apple.product-type.kernel-extension";
+		};
+/* ── End PBXNativeTarget section ────────────────────────────────────── */
+
+/* ── Begin PBXProject section ───────────────────────────────────────── */
+		PROJECT = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					TARGET = { CreatedOnToolsVersion = 15.0; };
+				};
+			};
+			buildConfigurationList = CL_PROJECT;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = ( en, Base );
+			mainGroup = GRP_ROOT;
+			productRefGroup = GRP_ROOT;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = ( TARGET );
+		};
+/* ── End PBXProject section ─────────────────────────────────────────── */
+
+	};
+	rootObject = PROJECT;
+}

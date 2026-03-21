@@ -1,0 +1,43 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildAndRun"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "04e8c5b6c6d289e5f8e1f9b6d4e7adac730950ad798a77ad508aa9e2564d013f"
+    }
+  ],
+  "containerPath" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEFramebuffer.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+          "CONFIGURATION_BUILD_DIR" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build/Debug",
+          "OBJROOT" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build/obj",
+          "SDKROOT" : "macosx26.2",
+          "SYMROOT" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build"
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "NO"
+        }
+      }
+    }
+  },
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : false,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : false
+}
