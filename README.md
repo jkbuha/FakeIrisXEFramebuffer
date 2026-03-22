@@ -1,106 +1,179 @@
 # FakeIrisXEFramebuffer.kext
-**Custom macOS kernel extension for Intel Tiger Lake Iris Xe iGPU (Gen 12)**  
-Target: macOS Sequoia 15 · OpenCore · x86_64
+
+**Experimental macOS kernel extension for Intel Tiger Lake Iris Xe iGPU (Gen 12)**  
+Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
+
+> ⚠️ **Experimental research driver.** This kext loads and matches the Tiger Lake GPU
+> in IOKit but does not yet provide hardware acceleration or drive the display.
+> Expect kernel panics if you push beyond the current stable state.
 
 ---
 
-## Status
+## Current Status
 
-| Component | Status | Notes |
+| Milestone | Status | Notes |
 |---|---|---|
-| Kext load / IOService | ✅ Compilable | `start()` skeleton complete |
-| MMIO / BAR0 mapping | ✅ Complete | `mapMMIO()` |
-| FORCEWAKE | ✅ Complete | Render + GT domains |
-| Power wells | ✅ Complete | PW1, PW2, DDI-A, AUX-A |
-| Display pipeline | ✅ Complete | Pipe A, Trans A, Plane 1A, 1080p60 |
-| Framebuffer alloc | ✅ Complete | Physically contiguous, XRGB8888 |
-| GEM / GGTT | ✅ Compilable | Bump allocator, PTE writer |
-| Execlists (direct ELSP) | ✅ Compilable | LRC init, ring emit, ELSP submit |
-| Execlists (GuC-mediated) | 🔶 Stub | Needs real `tgl_guc_70.bin` |
-| GuC firmware DMA | 🔶 Stub | Disabled until firmware embedded |
-| IOAccelerator | ✅ Compilable | Properties published, UserClient attaches |
-| Metal integration | ❌ Not started | Requires Apple private framework reverse-eng |
+| **Kext loads in macOS Sequoia 15** | ✅ Working | Survived reboot, stable |
+| **IOKit device match** | ✅ Working | Matches `pci8086,9a49` (i7-1165G7) |
+| **IOService registered + active** | ✅ Working | `registered, matched, active` in ioreg |
+| **AGPM integration** | ✅ Working | Apple GPU Power Management attached as child |
+| **AppleMCCS child** | ✅ Working | Monitor control module attached |
+| **MMIO / BAR0 mapping** | ✅ In `start()` | Safe — no register access at boot |
+| **Hardware init (GT/power wells/display)** | 🔶 Deferred | Moved to `enableController()` |
+| **`enableController()` called by WindowServer** | ⏳ Not yet | NDRV framebuffer wins display race |
+| **FORCEWAKE / GT response** | ⏳ Untested | Awaits `enableController()` |
+| **Display pipeline** | ⏳ Untested | Pipe A / Trans A / Plane 1A code written |
+| **GuC firmware** | 🔶 Stub | Needs `tgl_guc_70.bin` embedded |
+| **Metal / hardware acceleration** | ❌ Not started | Requires private framework reverse-eng |
 
 ---
 
-## Quick Start
+## How It Works
 
-### 1. Prerequisites
+The kext is a pure `IOFramebuffer` subclass. It matches the Tiger Lake PCI device
+(`0x9A498086` and related IDs) and registers with IOKit. Hardware initialisation
+is **fully deferred** to `enableController()` to avoid boot hangs — no hardware
+access occurs in `start()`.
 
-- Xcode installed (App Store or developer.apple.com)
-- macOS Sequoia 15 SDK (comes with Xcode 16+)
-- SIP **disabled**: boot into Recovery → `csrutil disable`
-- Boot args in OpenCore `config.plist → NVRAM → boot-args`:
-  ```
-  amfi_get_out_of_my_way=1 -lilubetaall -wegbeta keepsyms=1 debug=0x100
-  ```
+Currently the system boots with `IONDRVFramebuffer` (the EFI/firmware framebuffer)
+driving the display, and our kext sits alongside it as a registered but inactive
+`IOFramebuffer`. The next step is to raise our `IOProbeScore` to beat NDRV and
+get WindowServer to call `enableController()`.
 
-### 2. Build
+---
+
+## Build Requirements
+
+| Requirement | Notes |
+|---|---|
+| macOS Sequoia 15 | Build and target OS |
+| Xcode with Tahoe SDK (26.x) | Install from App Store or developer.apple.com |
+| KDK 15.5 build 24F74 | Required for symbol resolution at load time |
+| SIP fully disabled | `csrutil disable` + `csrutil authenticated-root disable` in Recovery |
+| `amfi_get_out_of_my_way=1` boot arg | Required for unsigned kext loading |
+
+---
+
+## Build Instructions
+
+### 1. Install the KDK
+
+Download and install the Kernel Debug Kit from Dortania's mirror (no Apple account needed):
 
 ```bash
+curl -L -o /tmp/KDK_15.5.dmg \
+  "https://github.com/dortania/KdkSupportPkg/releases/download/24F74/Kernel_Debug_Kit_15.5_build_24F74.dmg"
+hdiutil attach /tmp/KDK_15.5.dmg
+sudo installer -pkg "/Volumes/Kernel Debug Kit/KernelDebugKit.pkg" -target /
+```
+
+### 2. Clone and build
+
+```bash
+git clone https://github.com/jkbuha/FakeIrisXEFramebuffer.git
 cd FakeIrisXEFramebuffer
-chmod +x build.sh
-./build.sh
+
+# Generate the IOGraphicsFamily symbol stub (required for linking)
+bash generate_stubs.sh
+
+# Build
+KMOD=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib
+
+xcodebuild \
+  -project FakeIrisXEFramebuffer.xcodeproj \
+  -target FakeIrisXEFramebuffer \
+  -configuration Debug \
+  -sdk macosx \
+  CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
+  SYMROOT="$(pwd)/build" \
+  OBJROOT="$(pwd)/build/obj" \
+  EXCLUDED_SOURCE_FILE_NAMES="FakeIrisXEAccelerator.cpp stubs.cpp" \
+  OTHER_LDFLAGS="$(pwd)/iogfx_stubs.o -Xlinker -kext $KMOD/libkmod.a $KMOD/libkmodc++.a"
 ```
 
 Build output: `build/Debug/FakeIrisXEFramebuffer.kext`
 
-### 3. Install via OpenCore (recommended)
+### 3. Install to /Library/Extensions
 
 ```bash
-./build.sh install   # copies to /Volumes/EFI/EFI/OC/Kexts/
+sudo rm -rf /Library/Extensions/FakeIrisXEFramebuffer.kext
+sudo cp -R build/Debug/FakeIrisXEFramebuffer.kext /Library/Extensions/
+sudo cp FakeIrisXEFramebuffer.kext/Contents/Info.plist \
+    /Library/Extensions/FakeIrisXEFramebuffer.kext/Contents/Info.plist
+sudo chown -R root:wheel /Library/Extensions/FakeIrisXEFramebuffer.kext
 ```
 
-Then add to `config.plist → Kernel → Add`:
-
-```xml
-<dict>
-    <key>Arch</key>        <string>x86_64</string>
-    <key>BundlePath</key>  <string>FakeIrisXEFramebuffer.kext</string>
-    <key>Comment</key>     <string>Tiger Lake Iris Xe GPU driver</string>
-    <key>Enabled</key>     <true/>
-    <key>ExecutablePath</key> <string>Contents/MacOS/FakeIrisXEFramebuffer</string>
-    <key>MaxKernel</key>   <string></string>
-    <key>MinKernel</key>   <string>24.0.0</string>
-    <key>PlistPath</key>   <string>Contents/Info.plist</string>
-</dict>
-```
-
-### 4. Load for live iteration (no reboot)
+### 4. Approve and load
 
 ```bash
-./build.sh load
+sudo kmutil load --bundle-path /Library/Extensions/FakeIrisXEFramebuffer.kext
 ```
 
-### 5. Watch the log
+If you see **"not approved"**: go to System Settings → Privacy & Security → Allow.  
+If you see **"requires a reboot"**: reboot normally.
+
+### 5. Verify after reboot
 
 ```bash
-log stream --predicate 'sender == "kernel"' --level debug \
-  | grep -E "FakeIrisXE|GuC|Execlist|FORCEWAKE|LRC|ELSP|CSB"
+kextstat | grep FakeIrisXE
+ioreg -l -p IOService -n FakeIrisXEFramebuffer 2>/dev/null | head -20
+```
+
+Expected:
+```
+com.anomy.driver.FakeIrisXEFramebuffer (1.0.0) — loaded
+<class FakeIrisXEFramebuffer, registered, matched, active>
 ```
 
 ---
 
-## Enabling GuC Firmware (Path A)
+## Why the Symbol Stub?
 
-When the GuC firmware is available, GPU command submission will use Intel's
-microkernel scheduler instead of legacy direct-ELSP.
+In macOS 13+, `IOGraphicsFamily.kext` has no on-disk binary — it lives entirely in
+the sealed kernelcache. This means `kmutil` cannot resolve `IOFramebuffer` metaclass
+and vtable symbols at collection-build time when loading a third-party `IOFramebuffer`
+subclass.
 
-1. Clone linux-firmware:
-   ```bash
-   git clone https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
-   ```
-2. Convert to C array:
-   ```bash
-   cd linux-firmware
-   xxd -i i915/tgl_guc_70.bin > /path/to/project/guc_fw_raw.cpp
-   ```
-3. Edit `embedded_firmware.cpp`: replace the placeholder arrays with the
-   `xxd` output. Rename the array/length to:
-   - `gTGLGuCFirmwareData`
-   - `gTGLGuCFirmwareSize`
-4. In `embedded_firmware.h`, set: `#define GUC_FIRMWARE_AVAILABLE 1`
-5. Rebuild.
+The workaround (`iogfx_stubs.s`) provides **weak symbol definitions** for the
+specific entry-point symbols (`__antimain`, `__realmain`) that the static linker
+requires. All `IOFramebuffer` vtable and metaclass symbols are left **undefined**
+in our binary so `kmutil` resolves them correctly from the running kernelcache.
+
+To regenerate the stub after changing source files:
+```bash
+bash generate_stubs.sh
+```
+
+---
+
+## Why Not OpenCore Injection?
+
+OpenCore's prelinker (`OCAK`) cannot resolve `IOFramebuffer` vtable symbols at
+inject time — the same root cause as above, but without access to the running
+kernelcache. This produces:
+
+```
+OCAK: Vtable patching failed for kext com.anomy.driver.FakeIrisXEFramebuffer
+OC: Prelinked injection FakeIrisXEFramebuffer.kext - Invalid Parameter
+```
+
+The `/Library/Extensions/` install path (loaded via `kmutil`) is the working
+method. OpenCore injection would require restructuring as a Lilu plugin, which
+is a future roadmap item.
+
+---
+
+## Required Boot Args
+
+In `config.plist → NVRAM → boot-args`:
+```
+amfi_get_out_of_my_way=1 -lilubetaall -wegbeta keepsyms=1 debug=0x100
+igfxframe=0xFFFFFFFF agdpmod=pikera
+```
+
+Required OpenCore settings:
+- `Kernel → Quirks → SecureBootModel`: `Disabled`
+- SIP fully disabled in Recovery
 
 ---
 
@@ -108,48 +181,90 @@ microkernel scheduler instead of legacy direct-ELSP.
 
 ```
 FakeIrisXEFramebuffer/
-├── FakeIrisXEFramebuffer.cpp/hpp  — Main IOFramebuffer + GT init + display pipeline
-├── FakeIrisXEGuC.cpp/hpp          — GuC firmware DMA + CTB rings
+├── FakeIrisXEFramebuffer.cpp/hpp  — IOFramebuffer subclass, GT init, display pipeline
+│                                    Pipe A / Trans A / Plane 1A, 1920×1080@60 eDP
+│                                    All HW access deferred to enableController()
+├── FakeIrisXEGuC.cpp/hpp          — GuC firmware DMA loader + CTB rings
+│                                    Disabled: set GUC_FIRMWARE_AVAILABLE=1 to enable
 ├── FakeIrisXEExeclist.cpp/hpp     — LRC + ELSP command submission
-├── FakeIrisXEGEM.cpp/hpp          — GGTT object allocator
-├── FakeIrisXEAccelerator.cpp/hpp  — IOAccelerator stub
-├── stubs.cpp                      — Stub impls: AccelDevice, AccelContext,
-│                                    UserClients, Backlight
+│                                    Path A: GuC-mediated; Path B: direct ELSP fallback
+├── FakeIrisXEGEM.cpp/hpp          — GGTT object allocator + PTE writer
+├── FakeIrisXEAccelerator.cpp/hpp  — IOAccelerator stub (excluded from current build)
+├── stubs.cpp                      — AccelDevice, AccelContext, UserClient stubs
+│                                    Excluded: IOAcceleratorFamily2 not in kernelcache
 ├── embedded_firmware.cpp/h        — GuC firmware placeholder
 ├── i915_reg.h                     — TGL MMIO register definitions
+│                                    FORCEWAKE, power wells, display, GGTT, Execlists
 ├── FakeIrisXERing.h               — Ring buffer write helpers
-├── FakeIrisXEAccelShared.h        — Shared kernel/userspace types
-├── build.sh                       — Build + install + load script
+├── iogfx_stubs.s                  — Symbol stubs for static link (see above)
+├── generate_stubs.sh              — Regenerates iogfx_stubs.o
+├── FakeIrisXEFramebuffer.kext/    — Info.plist (source, copied into build output)
+│   └── Contents/Info.plist
 └── FakeIrisXEFramebuffer.xcodeproj/
-    └── project.pbxproj
 ```
 
 ---
 
-## Known Compile-time Issues to Resolve
+## Supported Hardware
 
-If you hit compile errors, the most likely causes:
+| Device ID | GPU | Status |
+|---|---|---|
+| `0x9A49` | Tiger Lake GT2 (i7-1165G7, i7-1185G7) | ✅ Tested — loads + matches |
+| `0x9A40` | Tiger Lake GT1 | 🔶 Untested |
+| `0x9A59` | Tiger Lake GT2 | 🔶 Untested |
+| `0x9A60` | Tiger Lake GT1 | 🔶 Untested |
+| `0x9A68` | Tiger Lake GT1 | 🔶 Untested |
+| `0x9A78` | Tiger Lake GT2 | 🔶 Untested |
 
-1. **`timingCEA861_1920x1080p60` undeclared**: This timing constant lives in
-   `IOGraphicsTypes.h`. If missing from your SDK version, substitute `(IOAppleTimingID)2` 
-   or declare it manually as `enum { timingCEA861_1920x1080p60 = 0x57 };`
+Test machine: Dell XPS 9500 (i7-1165G7), macOS Sequoia 15.7.4 (24G517)
 
-2. **`OSSafeReleaseNULL` missing**: Some older SDK headers don't have it.
-   Add to a header: `#define OSSafeReleaseNULL(x) do { if (x) { (x)->release(); (x) = nullptr; } } while(0)`
+---
 
-3. **`IOBufferMemoryDescriptor::inTaskWithOptions` signature**: On some SDK
-   versions the `alignment` parameter is positional. If you see argument count
-   errors, drop the last `PAGE_SIZE` argument.
+## Enabling GuC Firmware (Path A)
 
-4. **`-mkernel` + `libstdc++`**: The `CLANG_CXX_LIBRARY = libstdc++` setting
-   is correct for kernel extensions. Don't change it to `libc++`.
+By default, command submission uses legacy direct ELSP (Path B). To enable
+GuC-mediated submission:
+
+```bash
+# 1. Get firmware
+git clone https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
+xxd -i linux-firmware/i915/tgl_guc_70.bin > guc_fw_raw.cpp
+
+# 2. Replace embedded_firmware.cpp with xxd output
+# 3. Rename arrays to: gTGLGuCFirmwareData / gTGLGuCFirmwareSize
+```
+
+Set in `embedded_firmware.h`:
+```c
+#define GUC_FIRMWARE_AVAILABLE 1
+```
+
+Then rebuild.
+
+---
+
+## Roadmap
+
+- [ ] **IOKit test tool** — user client to verify FORCEWAKE + GT response without display risk
+- [ ] **Beat NDRV** — raise `IOProbeScore`, implement `getApertureRange()`, trigger `enableController()`
+- [ ] **Hardware validation** — FORCEWAKE, power wells, Pipe A, display output
+- [ ] **GuC firmware** — embed `tgl_guc_70.bin`, enable Path A submission
+- [ ] **Lilu plugin** — proper OpenCore injection path
+- [ ] **Metal** — Apple private framework reverse engineering
 
 ---
 
 ## References
 
 - Linux i915 driver: https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/i915
-- Intel PRM Vol 2c (Display): https://01.org/linuxgraphics/documentation
-- Pawan295 upstream work: https://github.com/pawan295/Appleinteltgldriver.kext
-- InsanelymMac thread: https://www.insanelymac.com/forum/topic/358305/
-- OpenCore config reference: https://dortania.github.io/OpenCore-Install-Guide/
+- Intel Tiger Lake PRM (Vol 2c/12/15/16/17): https://01.org/linuxgraphics/documentation
+- Dortania KDK mirror: https://github.com/dortania/KdkSupportPkg
+- pawan295 upstream: https://github.com/pawan295/Appleinteltgldriver.kext
+- InsanelyMac thread: https://www.insanelymac.com/forum/topic/358305/
+- OpenCore guide: https://dortania.github.io/OpenCore-Install-Guide/
+
+---
+
+## License
+
+MIT — do whatever you want, no warranty implied.
