@@ -38,42 +38,6 @@
 	<string>17C529</string>
 	<key>IOKitPersonalities</key>
 	<dict>
-		<key>FakeIrisXEAccelDevice</key>
-		<dict>
-			<key>CFBundleIdentifier</key>
-			<string>com.anomy.driver.FakeIrisXEFramebuffer</string>
-			<key>IOClass</key>
-			<string>FakeIrisXEAccelDevice</string>
-			<key>IOGVACapabilities</key>
-			<string>basic</string>
-			<key>IOProbeScore</key>
-			<integer>50000</integer>
-			<key>IOProviderClass</key>
-			<string>FakeIrisXEAccelerator</string>
-			<key>MetalPluginClassName</key>
-			<string>FakeIrisXEAccelerator</string>
-		</dict>
-		<key>FakeIrisXEAccelerator</key>
-		<dict>
-			<key>IOClass</key>
-			<string>FakeIrisXEAccelerator</string>
-			<key>IOGVAGPUSupported</key>
-			<true/>
-			<key>IOGVAHEVCDecode</key>
-			<true/>
-			<key>IOMatchCategory</key>
-			<string>IOAccelerator</string>
-			<key>IOProbeScore</key>
-			<integer>50000</integer>
-			<key>IOProviderClass</key>
-			<string>FakeIrisXEFramebuffer</string>
-			<key>IOUserClientClass</key>
-			<string>FakeIrisXEAcceleratorUserClient</string>
-			<key>MetalPlugin</key>
-			<true/>
-			<key>MetalPluginClassName</key>
-			<string>FakeIrisXEAccelerator</string>
-		</dict>
 		<key>FakeIrisXEFramebuffer</key>
 		<dict>
 			<key>AAPL,HasPanel</key>
@@ -84,8 +48,6 @@
 			<integer>0</integer>
 			<key>IOKitDebug</key>
 			<integer>65535</integer>
-			<key>IONameMatch</key>
-			<string>GFX0</string>
 			<key>IOPCIPrimaryMatch</key>
 			<string>0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
 			<key>IOProbeScore</key>
