@@ -1,6 +1,11 @@
 # FakeIrisXEFramebuffer.kext
 
-**Experimental macOS kernel extension for Intel Tiger Lake Iris Xe iGPU (Gen 12)**  
+> DISCLAIMER: This is mostly AI-driven. I'm just giving AI a bone and seeing just
+> with [Claude](https://claude.ai) how far we can actually get to automating resolving
+> Tiger Lake iGPU support on macOS entirely through AI-assisted kernel development.
+> The conversation history and decision trail are embedded in the commit log.
+
+**Experimental macOS kernel extension for Intel Tiger Lake Iris Xe iGPU (11th Generation)**  
 Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
 
 > ⚠️ **Experimental research driver.** This kext loads and matches the Tiger Lake GPU
