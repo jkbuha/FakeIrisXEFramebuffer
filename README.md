@@ -1,7 +1,7 @@
 # FakeIrisXEFramebuffer.kext
 
-> DISCLAIMER: This is mostly AI-driven. I'm just giving AI a bone and seeing just
-> with [Claude](https://claude.ai) how far we can actually get to automating resolving
+> 🤖 **Live development log:** This project is being actively developed in collaboration
+> with [Claude](https://claude.ai) (Anthropic) to see how far we can get resolving
 > Tiger Lake iGPU support on macOS entirely through AI-assisted kernel development.
 > The conversation history and decision trail are embedded in the commit log.
 
@@ -23,11 +23,16 @@ Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
 | **IOService registered + active** | ✅ Working | `registered, matched, active` in ioreg |
 | **AGPM integration** | ✅ Working | Apple GPU Power Management attached as child |
 | **AppleMCCS child** | ✅ Working | Monitor control module attached |
-| **MMIO / BAR0 mapping** | ✅ In `start()` | Safe — no register access at boot |
-| **Hardware init (GT/power wells/display)** | 🔶 Deferred | Moved to `enableController()` |
-| **`enableController()` called by WindowServer** | ⏳ Not yet | NDRV framebuffer wins display race |
-| **FORCEWAKE / GT response** | ⏳ Untested | Awaits `enableController()` |
-| **Display pipeline** | ⏳ Untested | Pipe A / Trans A / Plane 1A code written |
+| **MMIO / BAR0 mapping** | ✅ Working | BAR0 mapped in `start()`; IORegistry diagnostics published |
+| **CD clock diagnostic** | ✅ Working | Reads `CDCLK_CTL` + `DSSM` at load; publishes via IORegistry |
+| **CD clock state confirmed** | ✅ Known | 172.8 MHz (0x158) at boot; ref=38.4 MHz — below 648 MHz threshold |
+| **ICL device-id spoof** | ✅ Working | `device-id=0x8A52` injected via OpenCore DeviceProperties |
+| **AppleIntelICLGraphics loaded** | ✅ Working | ICL graphics kext loads alongside our kext |
+| **AppleIntelICLLPGraphicsFramebuffer loaded** | ✅ Working | ICLLP framebuffer kext loads, VRAM shows 8 MB |
+| **`enableController()` called by WindowServer** | ⏳ Blocked | ICLLP and NDRV both win ahead of us; ICLLP creates no framebuffer instances |
+| **CD clock reprogramming** | 🔶 In progress | Needs reprogramming 172.8→652.8 MHz before display pipeline can start |
+| **FORCEWAKE / GT response** | ⏳ Untested | Hangs at boot if attempted in `start()` or sync thread context |
+| **Display pipeline** | ⏳ Untested | Pipe A / Trans A / Plane 1A code written; blocked on CD clock |
 | **GuC firmware** | 🔶 Stub | Needs `tgl_guc_70.bin` embedded |
 | **Metal / hardware acceleration** | ❌ Not started | Requires private framework reverse-eng |
 
@@ -38,12 +43,30 @@ Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
 The kext is a pure `IOFramebuffer` subclass. It matches the Tiger Lake PCI device
 (`0x9A498086` and related IDs) and registers with IOKit. Hardware initialisation
 is **fully deferred** to `enableController()` to avoid boot hangs — no hardware
-access occurs in `start()`.
+access occurs in `start()` beyond reading two diagnostic registers.
 
-Currently the system boots with `IONDRVFramebuffer` (the EFI/firmware framebuffer)
-driving the display, and our kext sits alongside it as a registered but inactive
-`IOFramebuffer`. The next step is to raise our `IOProbeScore` to beat NDRV and
-get WindowServer to call `enableController()`.
+### Current boot sequence
+
+1. OpenCore injects `device-id=0x8A52` (ICL spoof) and `AAPL,ig-platform-id=0x00003400` via DeviceProperties
+2. `AppleIntelICLGraphics` and `AppleIntelICLLPGraphicsFramebuffer` load alongside our kext
+3. Our kext matches `pci8086,9a49`, maps BAR0, reads `CDCLK_CTL` and `DSSM` registers, publishes values to IORegistry
+4. `IONDRVFramebuffer` drives the display at boot (EFI framebuffer, ACPI name `display`)
+5. ICLLP loads but creates no framebuffer — hardware doesn't respond to ICL init sequences on TGL
+
+### Root cause identified
+
+`CDCLK_CTL` reads `0x380158` at boot — the CD clock frequency field is `0x158` (172.8 MHz),
+far below the 648 MHz minimum required by `AppleIntelICLLPGraphicsFramebuffer`. This causes
+`busy timeout IGPU` and silent failure. The firmware leaves the clock at its lowest setting.
+
+WhateverGreen's `-igfxcdc` flag is designed to fix this, but it only patches `probeCDClockFrequency()`
+inside ICLLP — which never gets called because ICLLP never successfully initialises the controller.
+
+### Next steps
+
+The CD clock must be reprogrammed to 652.8 MHz (ratio=34 for 38.4 MHz reference) before
+ICLLP or our own display pipeline can proceed. This needs to happen in an async kernel thread
+during `enableController()` — blocking the boot thread at this point causes a watchdog hang.
 
 ---
 
@@ -173,7 +196,19 @@ is a future roadmap item.
 In `config.plist → NVRAM → boot-args`:
 ```
 amfi_get_out_of_my_way=1 -lilubetaall -wegbeta keepsyms=1 debug=0x100
-igfxframe=0xFFFFFFFF agdpmod=pikera
+agdpmod=pikera -igfxcdc
+```
+
+Required OpenCore DeviceProperties for `PciRoot(0x0)/Pci(0x2,0x0)`:
+```xml
+<key>device-id</key>
+<data>UooAAA==</data>           <!-- 0x8A52 LE — spoof TGL → ICL so ICLLP loads -->
+<key>AAPL,ig-platform-id</key>
+<data>ADQAAA==</data>           <!-- 0x00003400 LE — ICL eDP laptop platform -->
+<key>framebuffer-stolenmem</key>
+<data>AAAwAQ==</data>
+<key>framebuffer-fbmem</key>
+<data>AACQAA==</data>
 ```
 
 Required OpenCore settings:
@@ -250,9 +285,14 @@ Then rebuild.
 
 ## Roadmap
 
-- [ ] **IOKit test tool** — user client to verify FORCEWAKE + GT response without display risk
-- [ ] **Beat NDRV** — raise `IOProbeScore`, implement `getApertureRange()`, trigger `enableController()`
-- [ ] **Hardware validation** — FORCEWAKE, power wells, Pipe A, display output
+- [x] **Kext loads and matches Tiger Lake GPU** — IOService registered, matched, active
+- [x] **CD clock diagnostic** — confirmed 172.8 MHz at boot (root cause of display hang)
+- [x] **ICL device-id spoof** — ICLLP loads via OpenCore DeviceProperties
+- [ ] **CD clock reprogramming** — reprogram to 652.8 MHz in async thread before display init
+- [ ] **ICLLP framebuffer instance** — get `AppleIntelFramebufferController` to instantiate
+- [ ] **`enableController()` triggered** — WindowServer calls our kext after NDRV suppressed
+- [ ] **FORCEWAKE + GT validation** — confirm hardware responds after CD clock fix
+- [ ] **Display pipeline** — Pipe A / Trans A / Plane 1A, eDP output
 - [ ] **GuC firmware** — embed `tgl_guc_70.bin`, enable Path A submission
 - [ ] **Lilu plugin** — proper OpenCore injection path
 - [ ] **Metal** — Apple private framework reverse engineering

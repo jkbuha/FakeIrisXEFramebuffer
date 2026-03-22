@@ -86,6 +86,30 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
         setProperty("FXE-CDClkOK",    cdfreq >= 0x50E);
         setProperty("FXE-RefClkIdx",  (uint64_t)refclk,  8);
     }
+
+    /* Reprogram CD clock if below 648 MHz — safe to do in start() */
+    {
+        uint32_t cdfreq = mmioRead32(0x46000) & 0x7FF;
+        if (cdfreq < 0x50E) {
+            /* Disable PLL (0x46070 bit31), wait for lock clear (bit30) */
+            uint32_t pll = mmioRead32(0x46070);
+            mmioWrite32(0x46070, pll & ~(1u << 31));
+            for (int t = 0; t < 500 && (mmioRead32(0x46070) & (1u<<30)); t++) IODelay(10);
+            /* Set ratio=34 for 38.4MHz ref → 652.8MHz */
+            pll = (mmioRead32(0x46070) & ~0xFF) | 34;
+            mmioWrite32(0x46070, pll);
+            /* Re-enable PLL, wait for lock */
+            mmioWrite32(0x46070, pll | (1u << 31));
+            for (int t = 0; t < 5000 && !(mmioRead32(0x46070) & (1u<<30)); t++) IODelay(10);
+            /* Write new decimal freq to CDCLK_CTL bits[10:0] = 0x518 */
+            uint32_t ctl = mmioRead32(0x46000);
+            mmioWrite32(0x46000, (ctl & ~0x7FF) | 0x518);
+            OSSynchronizeIO();
+            uint32_t after = mmioRead32(0x46000) & 0x7FF;
+            setProperty("FXE-CDFreqAfter", (uint64_t)after, 16);
+            setProperty("FXE-PLLAfter",    (uint64_t)mmioRead32(0x46070), 32);
+        }
+    }
     LOG("start complete — hardware init deferred to enableController()");
     return true;
 }
