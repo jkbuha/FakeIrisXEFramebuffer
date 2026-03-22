@@ -2,187 +2,104 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-
-    <!-- ═══════════════════════════════════════════════
-         Bundle identity
-         ═══════════════════════════════════════════ -->
-    <key>CFBundleIdentifier</key>
-    <string>com.anomy.driver.FakeIrisXEFramebuffer</string>
-
-    <key>CFBundleExecutable</key>
-    <string>FakeIrisXEFramebuffer</string>
-
-    <key>CFBundleName</key>
-    <string>FakeIrisXEFramebuffer</string>
-
-    <key>CFBundleVersion</key>
-    <string>1.0.0</string>
-
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-
-    <key>CFBundlePackageType</key>
-    <string>KEXT</string>
-
-    <key>CFBundleSupportedPlatforms</key>
-    <array>
-        <string>MacOSX</string>
-    </array>
-
-    <!-- ═══════════════════════════════════════════════
-         Kext metadata
-         ═══════════════════════════════════════════ -->
-    <key>OSBundleCompatibleVersion</key>
-    <string>1.0.0</string>
-
-    <!-- Root — loads before any IOService matching begins -->
-    <key>OSBundleRequired</key>
-    <string>Root</string>
-
-    <!-- ═══════════════════════════════════════════════
-         KPI library dependencies
-         Sequoia = Darwin 24.x → KPI version 24.0.0
-         IOGraphicsFamily / IOPCIFamily use 1.0.0 (semver floor)
-         ═══════════════════════════════════════════ -->
-    <key>OSBundleLibraries</key>
-    <dict>
-        <key>com.apple.kpi.libkern</key>
-        <string>24.0.0</string>
-
-        <key>com.apple.kpi.iokit</key>
-        <string>24.0.0</string>
-
-        <key>com.apple.kpi.unsupported</key>
-        <string>24.0.0</string>
-
-        <key>com.apple.kpi.bsd</key>
-        <string>24.0.0</string>
-
-        <key>com.apple.iokit.IOPCIFamily</key>
-        <string>1.0.0</string>
-
-        <key>com.apple.iokit.IOGraphicsFamily</key>
-        <string>1.0.0</string>
-
-        <key>com.apple.iokit.IOACPIFamily</key>
-        <string>1.0.0</string>
-    </dict>
-
-    <!-- ═══════════════════════════════════════════════
-         IOKit personalities
-         ═══════════════════════════════════════════ -->
-    <key>IOKitPersonalities</key>
-    <dict>
-
-        <!-- ───────────────────────────────────────
-             1. Framebuffer — matches PCI device
-                0x9A498086 = Tiger Lake Iris Xe 96EU
-                Also covers 0x9A408086 (80EU variant)
-             ─────────────────────────────────────── -->
-        <key>FakeIrisXEFramebuffer</key>
-        <dict>
-            <key>IOClass</key>
-            <string>FakeIrisXEFramebuffer</string>
-
-            <key>IOProviderClass</key>
-            <string>IOPCIDevice</string>
-
-            <!-- Match on Vendor ID 0x8086 + any TGL device ID.
-                 Listing multiple IDs separated by spaces is valid in
-                 IOPCIPrimaryMatch; the mask form 0x9A??8086 would also
-                 work but is less precise. -->
-            <key>IOPCIPrimaryMatch</key>
-            <string>0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
-
-            <!-- Prefer to match the GFX0 ACPI device name -->
-            <key>IONameMatch</key>
-            <string>GFX0</string>
-
-            <!-- Mark as a built-in GPU -->
-            <key>built-in</key>
-            <data>AA==</data>
-
-            <!-- IOFramebuffer needs this to know it has a connected panel -->
-            <key>AAPL,HasPanel</key>
-            <integer>1</integer>
-
-            <!-- Verbose IOKit matching debug output (remove for release) -->
-            <key>IOKitDebug</key>
-            <integer>65535</integer>
-
-            <!-- Probe score: higher than Apple's generic PCI driver (1000)
-                 but lower than any real Apple GPU driver (100000) -->
-            <key>IOProbeScore</key>
-            <integer>50000</integer>
-
-            <!-- Required by IOFramebuffer to locate our framebuffer -->
-            <key>IOFramebufferOpenGLIndex</key>
-            <integer>0</integer>
-        </dict>
-
-        <!-- ───────────────────────────────────────
-             2. Accelerator — attaches to the framebuffer
-             ─────────────────────────────────────── -->
-        <key>FakeIrisXEAccelerator</key>
-        <dict>
-            <key>IOClass</key>
-            <string>FakeIrisXEAccelerator</string>
-
-            <key>IOProviderClass</key>
-            <string>FakeIrisXEFramebuffer</string>
-
-            <key>IOMatchCategory</key>
-            <string>IOAccelerator</string>
-
-            <key>IOUserClientClass</key>
-            <string>FakeIrisXEAcceleratorUserClient</string>
-
-            <!-- Metal plugin name must match the .bundle inside the kext
-                 (or the class name for a kext-embedded plugin) -->
-            <key>MetalPluginClassName</key>
-            <string>FakeIrisXEAccelerator</string>
-
-            <key>MetalPlugin</key>
-            <true/>
-
-            <!-- Hardware video decode capability flags -->
-            <key>IOGVAHEVCDecode</key>
-            <true/>
-
-            <key>IOGVAGPUSupported</key>
-            <true/>
-
-            <key>IOProbeScore</key>
-            <integer>50000</integer>
-        </dict>
-
-        <!-- ───────────────────────────────────────
-             3. AccelDevice — secondary IOService node
-                published under the accelerator
-             ─────────────────────────────────────── -->
-        <key>FakeIrisXEAccelDevice</key>
-        <dict>
-            <key>CFBundleIdentifier</key>
-            <string>com.anomy.driver.FakeIrisXEFramebuffer</string>
-
-            <key>IOClass</key>
-            <string>FakeIrisXEAccelDevice</string>
-
-            <key>IOProviderClass</key>
-            <string>FakeIrisXEAccelerator</string>
-
-            <key>MetalPluginClassName</key>
-            <string>FakeIrisXEAccelerator</string>
-
-            <!-- Minimal capability string — tells CoreVideo we exist -->
-            <key>IOGVACapabilities</key>
-            <string>basic</string>
-
-            <key>IOProbeScore</key>
-            <integer>50000</integer>
-        </dict>
-
-    </dict>
-
+	<key>CFBundleExecutable</key>
+	<string>FakeIrisXEFramebuffer</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.anomy.driver.FakeIrisXEFramebuffer</string>
+	<key>CFBundleName</key>
+	<string>FakeIrisXEFramebuffer</string>
+	<key>CFBundlePackageType</key>
+	<string>KEXT</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>FakeIrisXEAccelDevice</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.anomy.driver.FakeIrisXEFramebuffer</string>
+			<key>IOClass</key>
+			<string>FakeIrisXEAccelDevice</string>
+			<key>IOGVACapabilities</key>
+			<string>basic</string>
+			<key>IOProbeScore</key>
+			<integer>50000</integer>
+			<key>IOProviderClass</key>
+			<string>FakeIrisXEAccelerator</string>
+			<key>MetalPluginClassName</key>
+			<string>FakeIrisXEAccelerator</string>
+		</dict>
+		<key>FakeIrisXEAccelerator</key>
+		<dict>
+			<key>IOClass</key>
+			<string>FakeIrisXEAccelerator</string>
+			<key>IOGVAGPUSupported</key>
+			<true/>
+			<key>IOGVAHEVCDecode</key>
+			<true/>
+			<key>IOMatchCategory</key>
+			<string>IOAccelerator</string>
+			<key>IOProbeScore</key>
+			<integer>50000</integer>
+			<key>IOProviderClass</key>
+			<string>FakeIrisXEFramebuffer</string>
+			<key>IOUserClientClass</key>
+			<string>FakeIrisXEAcceleratorUserClient</string>
+			<key>MetalPlugin</key>
+			<true/>
+			<key>MetalPluginClassName</key>
+			<string>FakeIrisXEAccelerator</string>
+		</dict>
+		<key>FakeIrisXEFramebuffer</key>
+		<dict>
+			<key>AAPL,HasPanel</key>
+			<integer>1</integer>
+			<key>IOClass</key>
+			<string>FakeIrisXEFramebuffer</string>
+			<key>IOFramebufferOpenGLIndex</key>
+			<integer>0</integer>
+			<key>IOKitDebug</key>
+			<integer>65535</integer>
+			<key>IONameMatch</key>
+			<string>GFX0</string>
+			<key>IOPCIPrimaryMatch</key>
+			<string>0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
+			<key>IOProbeScore</key>
+			<integer>50000</integer>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
+			<key>built-in</key>
+			<data>
+			AA==
+			</data>
+		</dict>
+	</dict>
+	<key>OSBundleCompatibleVersion</key>
+	<string>1.0.0</string>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.iokit.IOACPIFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.iokit.IOGraphicsFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.iokit.IOPCIFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.kpi.bsd</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.iokit</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.unsupported</key>
+		<string>24.0.0</string>
+	</dict>
+	<key>OSBundleRequired</key>
+	<string>Root</string>
 </dict>
 </plist>
