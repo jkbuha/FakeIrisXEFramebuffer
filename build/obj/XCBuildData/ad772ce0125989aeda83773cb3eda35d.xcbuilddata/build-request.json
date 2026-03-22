@@ -23,7 +23,7 @@
           "CONFIGURATION_BUILD_DIR" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build/Debug",
           "EXCLUDED_SOURCE_FILE_NAMES" : "FakeIrisXEAccelerator.cpp stubs.cpp",
           "OBJROOT" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build/obj",
-          "OTHER_LDFLAGS" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/iogfx_stubs.o -lkmod -lkmodc++ -lcc_kext",
+          "OTHER_LDFLAGS" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/iogfx_stubs.o -Xlinker -kext /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/libkmod.a /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/libkmodc++.a",
           "SDKROOT" : "macosx26.2",
           "SYMROOT" : "/Users/jkbuha/Sources/FakeIrisXEFramebuffer/build"
         }

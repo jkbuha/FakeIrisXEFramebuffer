@@ -73,6 +73,19 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
         return false;
     }
 
+    /* CD clock diagnostic — publish to IORegistry so it survives log silence */
+    {
+        uint32_t cdclk  = mmioRead32(0x46000);
+        uint32_t dssm   = mmioRead32(0x51004);
+        uint32_t cdfreq = cdclk & 0x7FF;
+        uint32_t refclk = (dssm >> 29) & 0x7;
+        /* Publish raw values as IORegistry properties — readable via ioreg */
+        setProperty("FXE-CDCLK_CTL",  (uint64_t)cdclk,  32);
+        setProperty("FXE-DSSM",       (uint64_t)dssm,   32);
+        setProperty("FXE-CDFreqField", (uint64_t)cdfreq, 16);
+        setProperty("FXE-CDClkOK",    cdfreq >= 0x50E);
+        setProperty("FXE-RefClkIdx",  (uint64_t)refclk,  8);
+    }
     LOG("start complete — hardware init deferred to enableController()");
     return true;
 }
