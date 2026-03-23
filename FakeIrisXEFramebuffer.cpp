@@ -114,6 +114,8 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
     return true;
 }
 
+
+
 void FakeIrisXEFramebuffer::stop(IOService *provider) {
     LOG("stop");
 
@@ -435,6 +437,106 @@ IOReturn FakeIrisXEFramebuffer::initGuCSystem() {
 /* ═══════════════════════════════════════════════════════════════════════
  * IOFramebuffer API
  * ═══════════════════════════════════════════════════════════════════════ */
+
+IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
+    LOG("requestProbe options=0x%08x — running HW test", options);
+
+    /* Run hardware test sequence and publish results to IORegistry */
+    uint32_t cdclk_before = _mmioBase ? (mmioRead32(0x46000) & 0x7FF) : 0xDEAD;
+    uint32_t dssm         = _mmioBase ? mmioRead32(0x51004) : 0;
+    setProperty("FXE-Test-CDClk-Before", (uint64_t)cdclk_before, 16);
+    setProperty("FXE-Test-DSSM",         (uint64_t)dssm,         32);
+
+    /* FORCEWAKE */
+    IOReturn ret = forcewakeGet();
+    setProperty("FXE-Test-ForcewakeOK", ret == kIOReturnSuccess);
+
+    if (ret == kIOReturnSuccess) {
+        /* Power Well 1 */
+        uint32_t ctlReg = HSW_PWR_WELL_CTL2;
+        uint32_t req1   = HSW_PWR_WELL_CTL_REQ(TGL_PW_CTL_IDX_PW_1);
+        uint32_t sta1   = HSW_PWR_WELL_CTL_STATE(TGL_PW_CTL_IDX_PW_1);
+        mmioWrite32(ctlReg, mmioRead32(ctlReg) | req1);
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(ctlReg) & sta1) break;
+            IODelay(100);
+        }
+        bool pw1ok = (mmioRead32(ctlReg) & sta1) != 0;
+        setProperty("FXE-Test-PW1OK", pw1ok);
+        LOG("requestProbe: PW1 %s", pw1ok ? "ON" : "TIMEOUT");
+
+        /* Power Well 2 */
+        uint32_t req2 = HSW_PWR_WELL_CTL_REQ(TGL_PW_CTL_IDX_PW_2);
+        uint32_t sta2 = HSW_PWR_WELL_CTL_STATE(TGL_PW_CTL_IDX_PW_2);
+        mmioWrite32(ctlReg, mmioRead32(ctlReg) | req2);
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(ctlReg) & sta2) break;
+            IODelay(100);
+        }
+        bool pw2ok = (mmioRead32(ctlReg) & sta2) != 0;
+        setProperty("FXE-Test-PW2OK", pw2ok);
+        LOG("requestProbe: PW2 %s", pw2ok ? "ON" : "TIMEOUT");
+
+        uint32_t cdclk_after = mmioRead32(0x46000) & 0x7FF;
+        setProperty("FXE-Test-CDClk-After", (uint64_t)cdclk_after, 16);
+
+        forcewakeRelease();
+    }
+
+    setProperty("FXE-Test-Done", true);
+    LOG("requestProbe: HW test complete");
+    return kIOReturnSuccess;
+}
+
+IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
+    LOG("requestProbe options=0x%08x — running HW test", options);
+
+    /* Run hardware test sequence and publish results to IORegistry */
+    uint32_t cdclk_before = _mmioBase ? (mmioRead32(0x46000) & 0x7FF) : 0xDEAD;
+    uint32_t dssm         = _mmioBase ? mmioRead32(0x51004) : 0;
+    setProperty("FXE-Test-CDClk-Before", (uint64_t)cdclk_before, 16);
+    setProperty("FXE-Test-DSSM",         (uint64_t)dssm,         32);
+
+    /* FORCEWAKE */
+    IOReturn ret = forcewakeGet();
+    setProperty("FXE-Test-ForcewakeOK", ret == kIOReturnSuccess);
+
+    if (ret == kIOReturnSuccess) {
+        /* Power Well 1 */
+        uint32_t ctlReg = HSW_PWR_WELL_CTL2;
+        uint32_t req1   = HSW_PWR_WELL_CTL_REQ(TGL_PW_CTL_IDX_PW_1);
+        uint32_t sta1   = HSW_PWR_WELL_CTL_STATE(TGL_PW_CTL_IDX_PW_1);
+        mmioWrite32(ctlReg, mmioRead32(ctlReg) | req1);
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(ctlReg) & sta1) break;
+            IODelay(100);
+        }
+        bool pw1ok = (mmioRead32(ctlReg) & sta1) != 0;
+        setProperty("FXE-Test-PW1OK", pw1ok);
+        LOG("requestProbe: PW1 %s", pw1ok ? "ON" : "TIMEOUT");
+
+        /* Power Well 2 */
+        uint32_t req2 = HSW_PWR_WELL_CTL_REQ(TGL_PW_CTL_IDX_PW_2);
+        uint32_t sta2 = HSW_PWR_WELL_CTL_STATE(TGL_PW_CTL_IDX_PW_2);
+        mmioWrite32(ctlReg, mmioRead32(ctlReg) | req2);
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(ctlReg) & sta2) break;
+            IODelay(100);
+        }
+        bool pw2ok = (mmioRead32(ctlReg) & sta2) != 0;
+        setProperty("FXE-Test-PW2OK", pw2ok);
+        LOG("requestProbe: PW2 %s", pw2ok ? "ON" : "TIMEOUT");
+
+        uint32_t cdclk_after = mmioRead32(0x46000) & 0x7FF;
+        setProperty("FXE-Test-CDClk-After", (uint64_t)cdclk_after, 16);
+
+        forcewakeRelease();
+    }
+
+    setProperty("FXE-Test-Done", true);
+    LOG("requestProbe: HW test complete");
+    return kIOReturnSuccess;
+}
 
 IOReturn FakeIrisXEFramebuffer::enableController() {
     LOG("enableController — performing deferred hardware init");

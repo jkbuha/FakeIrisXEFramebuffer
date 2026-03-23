@@ -10,3 +10,7 @@ __antimain:
 .globl __realmain
 __realmain:
   .quad 0
+
+  .quad 0
+  .quad 0
+  .quad 0

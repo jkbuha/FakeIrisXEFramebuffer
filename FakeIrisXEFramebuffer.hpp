@@ -121,6 +121,9 @@ public:
     IOMemoryMap *       getMMIOMap()    { return _mmioMap; }
     FakeIrisXEGEM *     getGEM()        { return _gem; }
 
+    /* User client — allows user-space tools to test hardware */
+    virtual IOReturn    requestProbe(IOOptionBits options) override;
+
     /* GuC system init — called from start() */
     IOReturn            initGuCSystem();
 

@@ -36,6 +36,12 @@
 			<integer>50000</integer>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
+			<key>IOUserClientClass</key>
+			<string>FakeIrisXEUserClient</string>
+			<key>IOUserClientDefaultLocking</key>
+			<true/>
+			<key>IOUserClientEntitlements</key>
+			<false/>
 			<key>built-in</key>
 			<data>
 			AA==
