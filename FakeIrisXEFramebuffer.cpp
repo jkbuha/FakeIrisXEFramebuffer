@@ -634,6 +634,76 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
         setProperty("FXE-PACKED-AFTER", (uint64_t)packed_after, 32);
         mmioWrite32(0x45400, packed); /* restore */
     }
+    /* Implement pawan295 power well sequence exactly */
+    if (_mmioBase && _pciDevice) {
+
+        /* Step 1: Force PCI to D0 */
+        _pciDevice->enablePCIPowerManagement(kPCIPMCSPowerStateD0);
+        uint16_t pmcsr = _pciDevice->configRead16(0x84);
+        pmcsr &= ~0x3;
+        _pciDevice->configWrite16(0x84, pmcsr);
+        IOSleep(10);
+        setProperty("FXE-SEQ-PMCSR", (uint64_t)_pciDevice->configRead16(0x84), 16);
+
+        /* Step 2: Disable GT power gating */
+        uint32_t gt_pg = mmioRead32(0xA218);
+        mmioWrite32(0xA218, gt_pg & ~0x1);
+        IOSleep(10);
+        setProperty("FXE-SEQ-GT-PG", (uint64_t)mmioRead32(0xA218), 32);
+
+        /* Step 3: Disable PUNIT power gating */
+        uint32_t punit = mmioRead32(0xA2B0);
+        mmioWrite32(0xA2B0, punit & ~0x80000000);
+        IOSleep(15);
+        setProperty("FXE-SEQ-PUNIT", (uint64_t)mmioRead32(0xA2B0), 32);
+
+        /* Step 4: Power Well 1 — write to BIOS CTL (0x45400), bits 1+2 */
+        /* Status at 0x45408 bit 30 */
+        uint32_t pw1_ctl = mmioRead32(0x45400);
+        setProperty("FXE-SEQ-PW1-CTL-BEFORE", (uint64_t)pw1_ctl, 32);
+        mmioWrite32(0x45400, pw1_ctl | 0x2);
+        IOSleep(10);
+        mmioWrite32(0x45400, mmioRead32(0x45400) | 0x4);
+        IOSleep(10);
+
+        bool pw1_up = false;
+        for (int t = 0; t < 20; t++) {
+            if (mmioRead32(0x45408) & (1u << 30)) { pw1_up = true; break; }
+            IOSleep(10);
+        }
+        setProperty("FXE-SEQ-PW1-STATUS", (uint64_t)mmioRead32(0x45408), 32);
+        setProperty("FXE-SEQ-PW1-OK", pw1_up);
+
+        /* Step 5: Power Well 2 — write bit 0 to 0x45404, wait for 0xFF */
+        uint32_t pw2_ctl = mmioRead32(0x45404);
+        setProperty("FXE-SEQ-PW2-CTL-BEFORE", (uint64_t)pw2_ctl, 32);
+        mmioWrite32(0x45404, pw2_ctl | 0x1);
+
+        bool pw2_up = false;
+        for (int t = 0; t < 50; t++) {
+            if ((mmioRead32(0x45404) & 0xFF) == 0xFF) { pw2_up = true; break; }
+            IOSleep(10);
+        }
+        setProperty("FXE-SEQ-PW2-STATUS", (uint64_t)mmioRead32(0x45404), 32);
+        setProperty("FXE-SEQ-PW2-OK", pw2_up);
+
+        /* Step 6: MBUS */
+        mmioWrite32(0x7003C, 0xb1038c02);
+        IOSleep(10);
+        setProperty("FXE-SEQ-MBUS", (uint64_t)mmioRead32(0x7003C), 32);
+
+        /* Step 7: LCPLL1 */
+        mmioWrite32(0x46010, 0xcc000000);
+        IOSleep(10);
+        setProperty("FXE-SEQ-LCPLL1", (uint64_t)mmioRead32(0x46010), 32);
+
+        /* Step 8: TRANS_CLK_SEL_A */
+        mmioWrite32(0x46140, 0x10000000);
+        IOSleep(10);
+        setProperty("FXE-SEQ-TRANS-CLK", (uint64_t)mmioRead32(0x46140), 32);
+
+        setProperty("FXE-SEQ-DONE", pw1_up && pw2_up);
+    }
     setProperty("FXE-Test-Done", true);
     LOG("requestProbe: HW test complete");
     return kIOReturnSuccess;
