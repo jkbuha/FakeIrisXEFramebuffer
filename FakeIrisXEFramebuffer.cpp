@@ -865,7 +865,7 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
     _pciDevice->setMemoryEnable(true);
     uint16_t pmcsr = _pciDevice->configRead16(0x84);
     _pciDevice->configWrite16(0x84, pmcsr & ~0x3);
-    IOSleep(10);
+    IODelay(10000);
 
     /* ── Step 2: FORCEWAKE ── */
     mmioWrite32(0xA278, 0x00010001);  /* FORCEWAKE_RENDER */
@@ -882,19 +882,19 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
 
     /* ── Step 3: Disable GT + PUNIT power gating ── */
     mmioWrite32(0xA218, mmioRead32(0xA218) & ~0x1);
-    IOSleep(10);
+    IODelay(10000);
     mmioWrite32(0xA2B0, mmioRead32(0xA2B0) & ~0x80000000);
-    IOSleep(15);
+    IODelay(15000);
 
     /* ── Step 4: Power Well 1 (BIOS CTL 0x45400, bits 1+2) ── */
     mmioWrite32(0x45400, mmioRead32(0x45400) | 0x2);
-    IOSleep(10);
+    IODelay(10000);
     mmioWrite32(0x45400, mmioRead32(0x45400) | 0x4);
-    IOSleep(10);
+    IODelay(10000);
     bool pw1ok = false;
     for (int t = 0; t < 20; t++) {
         if (mmioRead32(0x45408) & (1u<<30)) { pw1ok = true; break; }
-        IOSleep(10);
+        IODelay(10000);
     }
     LOG("enableController: PW1 %s", pw1ok ? "UP" : "TIMEOUT");
 
@@ -903,17 +903,17 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
     bool pw2ok = false;
     for (int t = 0; t < 50; t++) {
         if ((mmioRead32(0x45404) & 0xFF) == 0xFF) { pw2ok = true; break; }
-        IOSleep(10);
+        IODelay(10000);
     }
     LOG("enableController: PW2 %s", pw2ok ? "UP" : "TIMEOUT");
 
     /* ── Step 6: MBUS + display clocks ── */
     mmioWrite32(0x7003C, 0xb1038c02);
-    IOSleep(10);
+    IODelay(10000);
     mmioWrite32(0x46010, 0xcc000000);
-    IOSleep(10);
+    IODelay(10000);
     mmioWrite32(0x46140, 0x10000000);
-    IOSleep(10);
+    IODelay(10000);
 
     /* ── Step 7: Allocate framebuffer (32MB) ── */
     const uint32_t fbSize = 32 * 1024 * 1024;
@@ -985,7 +985,7 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
     /* Disable plane, set surface, re-enable */
     mmioWrite32(0x70180, mmioRead32(0x70180) & ~(1u<<31)); /* PLANE_CTL disable */
     (void)mmioRead32(0x7019C);                              /* flush */
-    IOSleep(2);
+    IODelay(2000);
     mmioWrite32(0x7019C, 0x800);                            /* PLANE_SURF = GGTT offset */
     mmioWrite32(0x70188, (1920*4)/64);
     mmioWrite32(0x70180, (1u<<31)|(0u<<24)|(1u<<3));        /* enable+XRGB8888+PipeA */
@@ -1035,7 +1035,7 @@ IOReturn FakeIrisXEFramebuffer::setAttributeForConnection(IOIndex connectIndex,
 }
 
 bool FakeIrisXEFramebuffer::isConsoleDevice() {
-    return false;
+    return true;
 }
 
 /* getApertureRange — pure virtual. Returns IODeviceMemory for the FB aperture. */
@@ -1049,7 +1049,7 @@ IODeviceMemory * FakeIrisXEFramebuffer::getApertureRange(IOPixelAperture apertur
 
 /* getPixelFormats — pure virtual. Null-separated, double-null-terminated string list. */
 const char * FakeIrisXEFramebuffer::getPixelFormats(void) {
-    static const char fmt[] = IO32BitDirectPixels "\0";
+    static const char fmt[] = "XRGB8888\0";
     return fmt;
 }
 
