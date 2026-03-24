@@ -110,7 +110,7 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
             setProperty("FXE-PLLAfter",    (uint64_t)mmioRead32(0x46070), 32);
         }
     }
-    LOG("start complete — hardware init deferred to enableController()");
+    LOG("start complete — enableController() called by WindowServer or fxe_test");
     return true;
 }
 
@@ -846,49 +846,164 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
 
 
 IOReturn FakeIrisXEFramebuffer::enableController() {
-    LOG("enableController — performing deferred hardware init");
+    static bool ran = false;
+    if (ran) {
+        LOG("enableController: already ran, skipping");
+        return kIOReturnSuccess;
+    }
+    ran = true;
+    LOG("enableController — running confirmed HW sequence");
 
-    /* GT power-up */
-    if (!_gtAwake) {
-        if (initGT() != kIOReturnSuccess) {
-            ERR("enableController: GT init failed");
-            return kIOReturnError;
+    if (!_mmioBase || !_pciDevice) {
+        ERR("enableController: no MMIO or PCI device");
+        return kIOReturnError;
+    }
+
+    /* ── Step 1: Force PCI D0 ── */
+    _pciDevice->enablePCIPowerManagement(kPCIPMCSPowerStateD0);
+    _pciDevice->setBusMasterEnable(true);
+    _pciDevice->setMemoryEnable(true);
+    uint16_t pmcsr = _pciDevice->configRead16(0x84);
+    _pciDevice->configWrite16(0x84, pmcsr & ~0x3);
+    IOSleep(10);
+
+    /* ── Step 2: FORCEWAKE ── */
+    mmioWrite32(0xA278, 0x00010001);  /* FORCEWAKE_RENDER */
+    for (int t = 0; t < 50; t++) {
+        if (mmioRead32(0x0D84) & 1) break;
+        IODelay(1000);
+    }
+    mmioWrite32(0xA188, 0x00010001);  /* FORCEWAKE_GT */
+    for (int t = 0; t < 50; t++) {
+        if (mmioRead32(0x130044) & 1) break;
+        IODelay(1000);
+    }
+    LOG("enableController: FORCEWAKE done");
+
+    /* ── Step 3: Disable GT + PUNIT power gating ── */
+    mmioWrite32(0xA218, mmioRead32(0xA218) & ~0x1);
+    IOSleep(10);
+    mmioWrite32(0xA2B0, mmioRead32(0xA2B0) & ~0x80000000);
+    IOSleep(15);
+
+    /* ── Step 4: Power Well 1 (BIOS CTL 0x45400, bits 1+2) ── */
+    mmioWrite32(0x45400, mmioRead32(0x45400) | 0x2);
+    IOSleep(10);
+    mmioWrite32(0x45400, mmioRead32(0x45400) | 0x4);
+    IOSleep(10);
+    bool pw1ok = false;
+    for (int t = 0; t < 20; t++) {
+        if (mmioRead32(0x45408) & (1u<<30)) { pw1ok = true; break; }
+        IOSleep(10);
+    }
+    LOG("enableController: PW1 %s", pw1ok ? "UP" : "TIMEOUT");
+
+    /* ── Step 5: Power Well 2 (DRV CTL 0x45404, bit 0) ── */
+    mmioWrite32(0x45404, mmioRead32(0x45404) | 0x1);
+    bool pw2ok = false;
+    for (int t = 0; t < 50; t++) {
+        if ((mmioRead32(0x45404) & 0xFF) == 0xFF) { pw2ok = true; break; }
+        IOSleep(10);
+    }
+    LOG("enableController: PW2 %s", pw2ok ? "UP" : "TIMEOUT");
+
+    /* ── Step 6: MBUS + display clocks ── */
+    mmioWrite32(0x7003C, 0xb1038c02);
+    IOSleep(10);
+    mmioWrite32(0x46010, 0xcc000000);
+    IOSleep(10);
+    mmioWrite32(0x46140, 0x10000000);
+    IOSleep(10);
+
+    /* ── Step 7: Allocate framebuffer (32MB) ── */
+    const uint32_t fbSize = 32 * 1024 * 1024;
+    _fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+        kernel_task,
+        kIODirectionInOut | kIOMemoryKernelUserShared,
+        fbSize,
+        0x000000003FFFF000ULL
+    );
+    if (!_fbMem || _fbMem->prepare() != kIOReturnSuccess) {
+        ERR("enableController: FB alloc failed");
+        if (_fbMem) { _fbMem->release(); _fbMem = nullptr; }
+        return kIOReturnNoMemory;
+    }
+    LOG("enableController: FB phys=0x%llx", _fbMem->getPhysicalAddress());
+
+    /* ── Step 8: Install GGTT page table entries ── */
+    {
+        uint64_t bar1Lo = _pciDevice->configRead32(0x18) & ~0xFULL;
+        uint64_t bar1Hi = _pciDevice->configRead32(0x1C);
+        uint64_t gttPhys = (bar1Hi << 32) | bar1Lo;
+
+        IOMemoryDescriptor* gttDesc = IOMemoryDescriptor::withPhysicalAddress(
+            gttPhys, 0x1000000, kIODirectionInOut);
+        if (gttDesc) {
+            IOMemoryMap* gttMap = gttDesc->map();
+            if (gttMap) {
+                volatile uint64_t* ggtt = (volatile uint64_t*)gttMap->getVirtualAddress();
+                const uint32_t kPageSize = 4096;
+                const uint32_t ggttBase  = 0x800 >> 12;  /* = 0 */
+                IOByteCount offset = 0;
+                uint32_t page = 0;
+                while (offset < fbSize) {
+                    IOByteCount segLen = 0;
+                    IOPhysicalAddress segPhys = _fbMem->getPhysicalSegment(offset, &segLen);
+                    if (!segPhys || !segLen) break;
+                    segLen &= ~(kPageSize-1);
+                    for (IOByteCount s = 0; s < segLen && offset < fbSize;
+                         s += kPageSize, offset += kPageSize, ++page)
+                        ggtt[ggttBase + page] = ((uint64_t)(segPhys+s) & ~0xFFFULL) | 0x3;
+                }
+                LOG("enableController: %u GGTT pages installed", page);
+                gttMap->release();
+            }
+            gttDesc->release();
         }
     }
 
-    /* Framebuffer allocation */
-    if (!_fbMemDesc) {
-        if (allocateFramebuffer() != kIOReturnSuccess) {
-            ERR("enableController: framebuffer allocation failed");
-            return kIOReturnError;
-        }
+    /* ── Step 9: Fill with solid blue test pattern ── */
+    {
+        uint32_t* px = (uint32_t*)_fbMem->getBytesNoCopy();
+        if (px) for (uint32_t i = 0; i < 1920*1080; i++) px[i] = 0x000000FF;
     }
 
-    /* GEM init */
-    if (!_gem) {
-        _gem = new FakeIrisXEGEM();
-        if (!_gem || !_gem->init(this)) {
-            ERR("enableController: GEM init failed");
-            OSSafeReleaseNULL(_gem);
-        }
-    }
+    /* ── Step 10: Program display plane ── */
+    /* Plane geometry */
+    mmioWrite32(0x7018C, 0x00000000);            /* PLANE_POS_1_A  */
+    mmioWrite32(0x70190, ((1080-1)<<16)|(1920-1)); /* PLANE_SIZE_1_A */
+    mmioWrite32(0x70188, (1920*4)/64);             /* PLANE_STRIDE_1_A = 120 */
 
-    /* Display pipeline */
-    if (!_displayInit) {
-        if (initDisplayPipeline() != kIOReturnSuccess) {
-            ERR("enableController: display pipeline init failed");
-            /* Non-fatal — continue */
-        }
-    }
+    /* Watermarks */
+    mmioWrite32(0xC4060, 0x00003FFF);
+    mmioWrite32(0xC4064, 0x00000010);
+    mmioWrite32(0xC4068, 0x00000020);
+    mmioWrite32(0xC406C, 0x00000040);
+    mmioWrite32(0xC4070, 0x00000080);
+    mmioWrite32(0xC4020, 0x0000000F);
 
-    /* GuC + Execlists */
-    if (!_execlist) {
-        if (initGuCSystem() != kIOReturnSuccess) {
-            LOG("enableController: GuC unavailable — legacy Execlists mode");
-        }
-    }
+    /* Disable plane, set surface, re-enable */
+    mmioWrite32(0x70180, mmioRead32(0x70180) & ~(1u<<31)); /* PLANE_CTL disable */
+    (void)mmioRead32(0x7019C);                              /* flush */
+    IOSleep(2);
+    mmioWrite32(0x7019C, 0x800);                            /* PLANE_SURF = GGTT offset */
+    mmioWrite32(0x70188, (1920*4)/64);
+    mmioWrite32(0x70180, (1u<<31)|(0u<<24)|(1u<<3));        /* enable+XRGB8888+PipeA */
+    mmioWrite32(0x7019C, 0x800);                            /* re-write to flip */
+    (void)mmioRead32(0x7019C);
 
-    LOG("enableController complete");
+    /* PIPECONF */
+    uint32_t pipeconf = mmioRead32(0x70008);
+    if (!(pipeconf & (1u<<31)))
+        mmioWrite32(0x70008, pipeconf|(1u<<31)|(1u<<30));
+
+    /* Panel power */
+    mmioWrite32(0xC7200, mmioRead32(0xC7200) | 1);
+
+    setProperty("FXE-EnableController-Done", true);
+    setProperty("FXE-PW1-OK", pw1ok);
+    setProperty("FXE-PW2-OK", pw2ok);
+    LOG("enableController complete — display pipeline active");
     return kIOReturnSuccess;
 }
 
@@ -925,9 +1040,11 @@ bool FakeIrisXEFramebuffer::isConsoleDevice() {
 
 /* getApertureRange — pure virtual. Returns IODeviceMemory for the FB aperture. */
 IODeviceMemory * FakeIrisXEFramebuffer::getApertureRange(IOPixelAperture aperture) {
-    if (aperture != kIOFBSystemAperture) return nullptr;
-    if (!_fbMemDesc) return nullptr;
-    return IODeviceMemory::withRange(_fbPhysAddr, _fbSize);
+    if (!_fbMem) return nullptr;
+    IOPhysicalAddress phys = _fbMem->getPhysicalAddress();
+    IOByteCount      len  = _fbMem->getLength();
+    LOG("getApertureRange aperture=%d phys=0x%llx len=0x%llx", aperture, (uint64_t)phys, (uint64_t)len);
+    return IODeviceMemory::withRange(phys, len);
 }
 
 /* getPixelFormats — pure virtual. Null-separated, double-null-terminated string list. */
