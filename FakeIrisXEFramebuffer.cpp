@@ -702,7 +702,142 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
         IOSleep(10);
         setProperty("FXE-SEQ-TRANS-CLK", (uint64_t)mmioRead32(0x46140), 32);
 
-        setProperty("FXE-SEQ-DONE", pw1_up && pw2_up);
+            setProperty("FXE-SEQ-DONE", pw1_up && pw2_up);
+
+        /* Display pipeline — only attempt if power wells are up */
+        if (pw1_up && pw2_up) do {
+            const uint32_t PIPE_SRC_A       = 0x6001C;
+            const uint32_t PIPECONF_A       = 0x70008;
+            const uint32_t PLANE_CTL_1_A    = 0x70180;
+            const uint32_t PLANE_SURF_1_A   = 0x7019C;
+            const uint32_t PLANE_STRIDE_1_A = 0x70188;
+            const uint32_t PLANE_SIZE_1_A   = 0x70190;
+            const uint32_t PLANE_POS_1_A    = 0x7018C;
+
+            /* Step A: Allocate framebuffer (32MB) */
+            const uint32_t fbSize = 32 * 1024 * 1024;
+            IOBufferMemoryDescriptor* fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+                kernel_task,
+                kIODirectionInOut | kIOMemoryKernelUserShared,
+                fbSize,
+                0x000000003FFFF000ULL
+            );
+            if (!fbMem || fbMem->prepare() != kIOReturnSuccess) {
+                ERR("Failed to allocate framebuffer");
+                if (fbMem) { fbMem->release(); fbMem = nullptr; }
+                setProperty("FXE-FB-ALLOC", false);
+                break;
+            }
+            setProperty("FXE-FB-PHYS", (uint64_t)fbMem->getPhysicalAddress(), 64);
+            LOG("hwInitAsync: FB allocated phys=0x%llx", fbMem->getPhysicalAddress());
+
+            /* Step B: Map GGTT (BAR1 = GTTMMADR at PCI config 0x18/0x1C) */
+            {
+                uint64_t bar1Lo = _pciDevice->configRead32(0x18) & ~0xFULL;
+                uint64_t bar1Hi = _pciDevice->configRead32(0x1C);
+                uint64_t gttPhys = (bar1Hi << 32) | bar1Lo;
+                setProperty("FXE-GTT-PHYS", gttPhys, 64);
+                LOG("hwInitAsync: GTTMMADR phys=0x%llx", gttPhys);
+
+                IOMemoryDescriptor* gttDesc = IOMemoryDescriptor::withPhysicalAddress(
+                    gttPhys, 0x1000000, kIODirectionInOut);
+                if (!gttDesc) {
+                    ERR("Failed to create GTT descriptor");
+                    fbMem->release();
+                    setProperty("FXE-GTT-MAP", false);
+                    break;
+                }
+                IOMemoryMap* gttMap = gttDesc->map();
+                if (!gttMap) {
+                    gttDesc->release(); fbMem->release();
+                    setProperty("FXE-GTT-MAP", false);
+                    break;
+                }
+
+                volatile uint64_t* ggtt = (volatile uint64_t*)gttMap->getVirtualAddress();
+                const uint32_t fbGGTTOffset = 0x800;  /* aperture byte offset */
+                const uint32_t ggttBaseIndex = fbGGTTOffset >> 12;  /* = 0 */
+                const uint32_t kPageSize = 4096;
+
+                /* Install PTEs */
+                IOByteCount offset = 0;
+                uint32_t page = 0;
+                while (offset < fbSize) {
+                    IOByteCount segLen = 0;
+                    IOPhysicalAddress segPhys = fbMem->getPhysicalSegment(offset, &segLen);
+                    if (!segPhys || !segLen) break;
+                    segLen &= ~(kPageSize - 1);
+                    for (IOByteCount segOff = 0; segOff < segLen && offset < fbSize;
+                         segOff += kPageSize, offset += kPageSize, ++page) {
+                        uint64_t phys = (uint64_t)(segPhys + segOff);
+                        ggtt[ggttBaseIndex + page] = (phys & ~0xFFFULL) | 0x3;
+                    }
+                }
+                setProperty("FXE-GTT-PAGES", (uint64_t)page, 32);
+                LOG("hwInitAsync: %u GGTT pages installed at index %u", page, ggttBaseIndex);
+
+                gttMap->release();
+                gttDesc->release();
+            }
+
+            /* Step C: Fill framebuffer with solid colour (blue = 0x000000FF) for test */
+            {
+                uint32_t* pixels = (uint32_t*)fbMem->getBytesNoCopy();
+                if (pixels) {
+                    uint32_t count = (1920 * 1080);
+                    for (uint32_t i = 0; i < count; i++) pixels[i] = 0x000000FF;
+                }
+            }
+
+            /* Step D: Program plane geometry */
+            uint32_t pipeSrc = mmioRead32(PIPE_SRC_A);
+            setProperty("FXE-PIPE-SRC-BIOS", (uint64_t)pipeSrc, 32);
+            if (!pipeSrc) mmioWrite32(PIPE_SRC_A, ((1920-1)<<16)|(1080-1));
+
+            mmioWrite32(PLANE_POS_1_A,  0x00000000);
+            mmioWrite32(PLANE_SIZE_1_A, ((1080-1)<<16)|(1920-1));
+            mmioWrite32(PLANE_STRIDE_1_A, (1920*4) / 64);  /* 120 blocks */
+
+            /* Watermarks */
+            mmioWrite32(0xC4060, 0x00003FFF);
+            mmioWrite32(0xC4064, 0x00000010);
+            mmioWrite32(0xC4068, 0x00000020);
+            mmioWrite32(0xC406C, 0x00000040);
+            mmioWrite32(0xC4070, 0x00000080);
+            mmioWrite32(0xC4020, 0x0000000F);
+
+            /* Step E: Disable plane, write surface, re-enable */
+            mmioWrite32(PLANE_CTL_1_A, mmioRead32(PLANE_CTL_1_A) & ~(1u<<31));
+            (void)mmioRead32(PLANE_SURF_1_A);  /* flush */
+            IOSleep(2);
+
+            mmioWrite32(PLANE_SURF_1_A, 0x800);  /* GGTT offset */
+            mmioWrite32(PLANE_STRIDE_1_A, (1920*4) / 64);
+
+            uint32_t planeCtl = (1u<<31)|(0u<<24)|(1u<<3);  /* enable+XRGB8888+PipeA */
+            mmioWrite32(PLANE_CTL_1_A, planeCtl);
+            mmioWrite32(PLANE_SURF_1_A, 0x800);  /* re-write to trigger flip */
+            (void)mmioRead32(PLANE_SURF_1_A);
+
+            setProperty("FXE-PLANE-CTL-FINAL",  (uint64_t)mmioRead32(PLANE_CTL_1_A), 32);
+            setProperty("FXE-PLANE-SURF-FINAL", (uint64_t)mmioRead32(PLANE_SURF_1_A), 32);
+
+            /* PIPECONF */
+            uint32_t pipeconf = mmioRead32(PIPECONF_A);
+            if (!(pipeconf & (1u<<31))) {
+                mmioWrite32(PIPECONF_A, pipeconf|(1u<<31)|(1u<<30));
+                IOSleep(5);
+            }
+            setProperty("FXE-PIPECONF-FINAL", (uint64_t)mmioRead32(PIPECONF_A), 32);
+
+            /* Panel power */
+            mmioWrite32(0xC7200, mmioRead32(0xC7200) | 1);
+            setProperty("FXE-PP-CTL-FINAL", (uint64_t)mmioRead32(0xC7200), 32);
+
+            setProperty("FXE-DISPLAY-INIT", true);
+            LOG("hwInitAsync: display pipeline complete — screen should show blue");
+
+        } while (0); /* display pipeline block */
     }
     setProperty("FXE-Test-Done", true);
     LOG("requestProbe: HW test complete");
