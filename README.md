@@ -9,7 +9,8 @@
 Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
 
 > ⚠️ **Experimental research driver.** This kext loads and matches the Tiger Lake GPU
-> in IOKit but does not yet provide hardware acceleration or drive the display.
+> in IOKit and can drive the display pipeline (Plane 1 visible output confirmed).
+> Does not yet provide hardware acceleration.
 > Expect kernel panics if you push beyond the current stable state.
 
 ---
@@ -26,14 +27,15 @@ Target: macOS Sequoia 15 · x86_64 hackintosh · OpenCore
 | **MMIO / BAR0 mapping** | ✅ Working | BAR0 mapped in `start()`; IORegistry diagnostics published |
 | **CD clock reprogramming** | ✅ Working | Reprogrammed 172.8→652.8 MHz in `start()` via PLL disable/ratio/enable sequence |
 | **CD clock confirmed at 652.8 MHz** | ✅ Confirmed | `CDCLK_CTL` field reads `0x518` after reprogram; persists across probe |
-| **ICL device-id spoof** | ✅ Working | `device-id=0x8A52` injected via OpenCore DeviceProperties |
-| **AppleIntelICLGraphics loaded** | ✅ Working | ICL graphics kext loads alongside our kext |
-| **AppleIntelICLLPGraphicsFramebuffer loaded** | ✅ Working | ICLLP framebuffer kext loads, VRAM shows 8 MB |
-| **HW test tool** | ✅ Working | `requestProbe()` triggers test; results published to IORegistry |
 | **FORCEWAKE** | ✅ Working | GT responds to FORCEWAKE — hardware is alive |
-| **Power wells (PW1/PW2)** | ❌ Timing out | Register address may differ on TGL vs HSW/ICL — under investigation |
-| **`enableController()` called by WindowServer** | ⏳ Blocked | `IOMatchCategory=IOFramebuffer` causes boot hang; root cause under investigation |
-| **Display pipeline** | ⏳ Blocked | Awaits power wells |
+| **Power wells (PW1/PW2)** | ✅ Working | Fuse bypass — `SKL_FUSE_STATUS=0x8F800000` shows PG0/1/2 distributed; wells already up |
+| **GGTT PTE mapping** | ✅ Working | PTEs installed via BAR1, offset 0x800, 8192 pages verified via readback |
+| **Display pipeline — first light** | ✅ Working | Plane 1 produces visible output (confirmed red screen with initial format; green with corrected XRGB8888) |
+| **Correct pixel format** | ✅ Fixed | XRGB8888 `(4u<<24)` — was indexed 8bpp `(0u<<24)` |
+| **Correct resolution** | ✅ Fixed | 1920×1200 from BIOS `PIPE_SRC_A` — was hardcoded 1080p |
+| **HW test tool** | ✅ Working | `requestProbe()` triggers test; results published to IORegistry |
+| **NDRV displacement** | ⏳ Next step | WindowServer flip loop overwrites our Plane 1; need to fire before NDRV |
+| **`enableController()` display init** | ⏳ Next step | Move display pipeline from `requestProbe()` to `enableController()` (per pawan's architecture) |
 | **GuC firmware** | 🔶 Stub | Needs `tgl_guc_70.bin` embedded |
 | **Metal / hardware acceleration** | ❌ Not started | Requires private framework reverse-eng |
 
@@ -52,13 +54,30 @@ causing `AppleIntelICLGraphics` and `AppleIntelICLLPGraphicsFramebuffer` to also
 3. Our kext matches, maps BAR0, reprograms CD clock from 172.8→652.8 MHz
 4. `IONDRVFramebuffer` drives the display (EFI framebuffer)
 5. Our kext sits alongside as a registered `IOFramebuffer` in `IODefaultMatchCategory`
+6. `sudo ./fxe_test` triggers `requestProbe()` which runs the full display pipeline
 
 ### Key hardware findings
 
 - **FORCEWAKE**: GT responds correctly ✅
 - **CD clock**: Firmware leaves it at 172.8 MHz; our kext reprograms to 652.8 MHz via PLL sequence ✅
-- **Power wells**: Timing out — TGL power well register addresses differ from HSW/ICL baseline 🔶
-- **`IOMatchCategory=IOFramebuffer`**: Causes IOKit boot deadlock when competing with NDRV — root cause unknown
+- **PLL**: Enabled, locked, ratio=34 at `0x46070 = 0xC0000022` ✅
+- **Power wells**: TGL packed register at `0x45404` reads `0xFF` (locked by ICLLP spoof). Fuse-based bypass: `SKL_FUSE_STATUS=0x8F800000` confirms PG0/PG1/PG2 distributed — wells already enabled by firmware ✅
+- **GGTT**: PTEs installed via BAR1 (`GTTMMADR` at PCI config `0x18/0x1C`), offset `0x800`, verified readback `PTE0=0x02000003` matches framebuffer physical address `0x02000000` ✅
+- **Display pipeline**: Plane 1 Pipe A produces visible output. Format corrected from indexed 8bpp to XRGB8888. Resolution corrected from 1080p to 1920×1200 (read from BIOS `PIPE_SRC_A`). Pipe watermarks configured at `0xC4060` series ✅
+- **NDRV conflict**: WindowServer's flip loop overwrites `PLANE_SURF_1_A` within milliseconds of our write, preventing sustained green screen when triggered via `requestProbe()`. Moving init to `enableController()` (fires before WindowServer) is the next step 🔶
+
+### Key register state (confirmed on hardware)
+
+```
+PIPE_SRC_A       = 0x077F04AF  (1920×1200)
+PIPECONF_A       = 0xC0000024  (enabled, state on, 10bpc)
+PLANE_CTL_1_A    = 0x84400008  (enable + XRGB8888 + pipe gamma + PipeA)
+PLANE_SURF_1_A   = 0x00000800  (GGTT offset)
+PLANE_STRIDE_1_A = 120         (cache line blocks = 1920×4/64)
+PLL (0x46070)    = 0xC0000022  (enabled, locked, ratio=34)
+CDCLK_CTL        = 0x00000518  (652.8 MHz)
+FUSE_STATUS      = 0x8F800000  (PG0/PG1/PG2 distributed)
+```
 
 ### HW test tool
 
@@ -116,7 +135,7 @@ xcodebuild \
   CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
   SYMROOT="$(pwd)/build" \
   OBJROOT="$(pwd)/build/obj" \
-  EXCLUDED_SOURCE_FILE_NAMES="FakeIrisXEAccelerator.cpp stubs.cpp" \
+  EXCLUDED_SOURCE_FILE_NAMES="FakeIrisXEAccelerator.cpp stubs.cpp FakeIrisXEUserClient.cpp" \
   OTHER_LDFLAGS="$(pwd)/iogfx_stubs.o -Xlinker -kext $KMOD/libkmod.a $KMOD/libkmodc++.a"
 ```
 
@@ -223,8 +242,8 @@ Required OpenCore settings:
 ```
 FakeIrisXEFramebuffer/
 ├── FakeIrisXEFramebuffer.cpp/hpp  — IOFramebuffer subclass, GT init, display pipeline
-│                                    Pipe A / Trans A / Plane 1A, 1920×1080@60 eDP
-│                                    All HW access deferred to enableController()
+│                                    Pipe A / Trans A / Plane 1A, 1920×1200@60 eDP
+│                                    Power well fuse bypass, GGTT via BAR1
 ├── FakeIrisXEGuC.cpp/hpp          — GuC firmware DMA loader + CTB rings
 │                                    Disabled: set GUC_FIRMWARE_AVAILABLE=1 to enable
 ├── FakeIrisXEExeclist.cpp/hpp     — LRC + ELSP command submission
@@ -235,7 +254,8 @@ FakeIrisXEFramebuffer/
 │                                    Excluded: IOAcceleratorFamily2 not in kernelcache
 ├── embedded_firmware.cpp/h        — GuC firmware placeholder
 ├── i915_reg.h                     — TGL MMIO register definitions
-│                                    FORCEWAKE, power wells, display, GGTT, Execlists
+│                                    FORCEWAKE, power wells, DC_STATE_EN,
+│                                    SKL_FUSE_STATUS, display, GGTT, Execlists
 ├── FakeIrisXERing.h               — Ring buffer write helpers
 ├── iogfx_stubs.s                  — Symbol stubs for static link (see above)
 ├── generate_stubs.sh              — Regenerates iogfx_stubs.o
@@ -250,14 +270,14 @@ FakeIrisXEFramebuffer/
 
 | Device ID | GPU | Status |
 |---|---|---|
-| `0x9A49` | Tiger Lake GT2 (i7-1165G7, i7-1185G7) | ✅ Tested — loads + matches |
+| `0x9A49` | Tiger Lake GT2 (i7-1165G7, i7-1185G7) | ✅ Tested — loads + visible display output |
 | `0x9A40` | Tiger Lake GT1 | 🔶 Untested |
 | `0x9A59` | Tiger Lake GT2 | 🔶 Untested |
 | `0x9A60` | Tiger Lake GT1 | 🔶 Untested |
 | `0x9A68` | Tiger Lake GT1 | 🔶 Untested |
 | `0x9A78` | Tiger Lake GT2 | 🔶 Untested |
 
-Test machine: Dell XPS 9500 (i7-1165G7), macOS Sequoia 15.7.4 (24G517)
+Test machine: Dell XPS 9500 (i7-1185G7), macOS Sequoia 15, 1920×1200 eDP panel
 
 ---
 
@@ -292,9 +312,11 @@ Then rebuild.
 - [x] **ICL device-id spoof** — ICLLP loads via OpenCore DeviceProperties
 - [x] **FORCEWAKE** — GT confirmed alive and responsive
 - [x] **HW test tool** — `requestProbe()` + IORegistry; no user client needed
-- [ ] **Power wells (PW1/PW2)** — diagnose TGL register address differences vs HSW/ICL
-- [ ] **`enableController()` triggered** — needs non-deadlocking NDRV suppression strategy
-- [ ] **Display pipeline** — Pipe A / Trans A / Plane 1A, eDP output
+- [x] **Power wells (PW1/PW2)** — fuse bypass: PG0/PG1/PG2 already distributed by firmware
+- [x] **GGTT PTE mapping** — BAR1, offset 0x800, 8192 pages, verified readback
+- [x] **Display pipeline first light** — Plane 1 visible output with correct XRGB8888 format + 1920×1200
+- [ ] **NDRV displacement** — move display init to `enableController()` to fire before WindowServer
+- [ ] **Sustained display output** — green test pattern visible without NDRV overwrite
 - [ ] **GuC firmware** — embed `tgl_guc_70.bin`, enable Path A submission
 - [ ] **Lilu plugin** — proper OpenCore injection path
 - [ ] **Metal** — Apple private framework reverse engineering
@@ -306,7 +328,7 @@ Then rebuild.
 - Linux i915 driver: https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/i915
 - Intel Tiger Lake PRM (Vol 2c/12/15/16/17): https://01.org/linuxgraphics/documentation
 - Dortania KDK mirror: https://github.com/dortania/KdkSupportPkg
-- pawan295 upstream: https://github.com/pawan295/Appleinteltgldriver.kext
+- pawan295 TGL driver: https://github.com/pawan295/Appleinteltgldriver.kext
 - InsanelyMac thread: https://www.insanelymac.com/forum/topic/358305/
 - OpenCore guide: https://dortania.github.io/OpenCore-Install-Guide/
 
