@@ -30,14 +30,10 @@
 			<integer>0</integer>
 			<key>IOKitDebug</key>
 			<integer>65535</integer>
-			<key>IOMatchCategory</key>
-			<string>IOFramebuffer</string>
-			<key>IONameMatch</key>
-			<string>GFX0</string>
 			<key>IOPCIPrimaryMatch</key>
 			<string>0x8A528086 0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
 			<key>IOProbeScore</key>
-			<integer>60000</integer>
+			<integer>50000</integer>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
 			<key>IOUserClientDefaultLocking</key>
@@ -50,8 +46,6 @@
 			</data>
 		</dict>
 	</dict>
-	<key>OSBundleCompatibleVersion</key>
-	<string>1.0.0</string>
 	<key>OSBundleLibraries</key>
 	<dict>
 		<key>com.apple.iokit.IOACPIFamily</key>
@@ -69,7 +63,5 @@
 		<key>com.apple.kpi.unsupported</key>
 		<string>24.0.0</string>
 	</dict>
-	<key>OSBundleRequired</key>
-	<string>Root</string>
 </dict>
 </plist>

@@ -151,7 +151,6 @@ private:
     size_t              _mmioSize     = 0;
 
     IOBufferMemoryDescriptor * _fbMemDesc  = nullptr;
-    IOBufferMemoryDescriptor * _fbMem      = nullptr;
     IOPhysicalAddress          _fbPhysAddr = 0;
     void *                     _fbVirtAddr = nullptr;
     size_t                     _fbSize     = 0;
