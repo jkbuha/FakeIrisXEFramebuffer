@@ -846,10 +846,144 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
 
 
 IOReturn FakeIrisXEFramebuffer::enableController() {
-    /* Stub — hardware init is done via requestProbe()/fxe_test only.
-     * DO NOT add blocking code here — IOFramebuffer::start() calls this
-     * synchronously on the boot thread. */
-    LOG("enableController called — returning immediately (use fxe_test)");
+    /* Run display pipeline init ONCE, before WindowServer starts.
+     * This is the window where NDRV hasn't begun flipping Plane 1 yet.
+     * Pawan's TGL driver uses the same approach. */
+    static bool hasRun = false;
+    if (hasRun) {
+        LOG("enableController: already ran — skipping");
+        return kIOReturnSuccess;
+    }
+    hasRun = true;
+    LOG("enableController: running display pipeline init (first call only)");
+
+    if (!_mmioBase || !_pciDevice) {
+        ERR("enableController: MMIO or PCI not ready");
+        return kIOReturnNotReady;
+    }
+
+    /* Power wells via fuse bypass */
+    IOReturn pwRet = enablePowerWells();
+    setProperty("FXE-EC-PW-RET", (uint64_t)pwRet, 32);
+    if (pwRet != kIOReturnSuccess) {
+        ERR("enableController: power wells failed");
+        return pwRet;
+    }
+
+    /* Display pipeline — Plane 1, Pipe A */
+    do {
+        const uint32_t PIPE_SRC_A       = 0x6001C;
+        const uint32_t PIPECONF_A       = 0x70008;
+        const uint32_t PLANE_CTL_1_A    = 0x70180;
+        const uint32_t PLANE_SURF_1_A   = 0x7019C;
+        const uint32_t PLANE_STRIDE_1_A = 0x70188;
+        const uint32_t PLANE_SIZE_1_A   = 0x70190;
+        const uint32_t PLANE_POS_1_A    = 0x7018C;
+
+        /* Allocate framebuffer (32MB) */
+        const uint32_t fbSize = 32 * 1024 * 1024;
+        const uint32_t fbGGTTOffset = 0x800;
+        IOBufferMemoryDescriptor* fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+            kernel_task,
+            kIODirectionInOut | kIOMemoryKernelUserShared,
+            fbSize,
+            0x000000003FFFF000ULL
+        );
+        if (!fbMem || fbMem->prepare() != kIOReturnSuccess) {
+            ERR("enableController: FB alloc failed");
+            if (fbMem) { fbMem->release(); }
+            break;
+        }
+        setProperty("FXE-EC-FB-PHYS", (uint64_t)fbMem->getPhysicalAddress(), 64);
+
+        /* GGTT PTEs via BAR1 */
+        {
+            uint64_t bar1Lo = _pciDevice->configRead32(0x18) & ~0xFULL;
+            uint64_t bar1Hi = _pciDevice->configRead32(0x1C);
+            uint64_t gttPhys = (bar1Hi << 32) | bar1Lo;
+
+            IOMemoryDescriptor* gttDesc = IOMemoryDescriptor::withPhysicalAddress(
+                gttPhys, 0x1000000, kIODirectionInOut);
+            if (!gttDesc) { fbMem->release(); break; }
+            IOMemoryMap* gttMap = gttDesc->map();
+            if (!gttMap) { gttDesc->release(); fbMem->release(); break; }
+
+            volatile uint64_t* ggtt = (volatile uint64_t*)gttMap->getVirtualAddress();
+            const uint32_t ggttBaseIndex = fbGGTTOffset >> 12;
+            const uint32_t kPageSize = 4096;
+
+            IOByteCount offset = 0;
+            uint32_t page = 0;
+            while (offset < fbSize) {
+                IOByteCount segLen = 0;
+                IOPhysicalAddress segPhys = fbMem->getPhysicalSegment(offset, &segLen);
+                if (!segPhys || !segLen) break;
+                segLen &= ~(kPageSize - 1);
+                for (IOByteCount segOff = 0; segOff < segLen && offset < fbSize;
+                     segOff += kPageSize, offset += kPageSize, ++page) {
+                    uint64_t phys = (uint64_t)(segPhys + segOff);
+                    ggtt[ggttBaseIndex + page] = (phys & ~0xFFFULL) | 0x3;
+                }
+            }
+            OSSynchronizeIO();
+            setProperty("FXE-EC-GTT-PAGES", (uint64_t)page, 32);
+
+            gttMap->release();
+            gttDesc->release();
+        }
+
+        /* Read BIOS resolution, fill green */
+        uint32_t pipeSrc = mmioRead32(PIPE_SRC_A);
+        uint32_t dispW = ((pipeSrc >> 16) & 0xFFFF) + 1;
+        uint32_t dispH = (pipeSrc & 0xFFFF) + 1;
+        if (dispW < 640 || dispW > 3840) dispW = 1920;
+        if (dispH < 480 || dispH > 2400) dispH = 1200;
+        setProperty("FXE-EC-WIDTH", (uint64_t)dispW, 32);
+        setProperty("FXE-EC-HEIGHT", (uint64_t)dispH, 32);
+
+        {
+            uint32_t* pixels = (uint32_t*)fbMem->getBytesNoCopy();
+            if (pixels) {
+                uint32_t count = dispW * dispH;
+                if (count > fbSize / 4) count = fbSize / 4;
+                for (uint32_t i = 0; i < count; i++) pixels[i] = 0x0000FF00;
+            }
+        }
+
+        /* Program Plane 1 */
+        uint32_t stride = (dispW * 4) / 64;
+        mmioWrite32(PLANE_POS_1_A, 0x00000000);
+        mmioWrite32(PLANE_SIZE_1_A, ((dispH-1)<<16)|(dispW-1));
+        mmioWrite32(PLANE_STRIDE_1_A, stride);
+
+        /* Pipe watermarks */
+        mmioWrite32(0xC4060, 0x00003FFF);
+        mmioWrite32(0xC4064, 0x00000010);
+        mmioWrite32(0xC4068, 0x00000020);
+        mmioWrite32(0xC406C, 0x00000040);
+        mmioWrite32(0xC4070, 0x00000080);
+        mmioWrite32(0xC4020, 0x0000000F);
+
+        /* Disable, program surface, re-enable */
+        mmioWrite32(PLANE_CTL_1_A, mmioRead32(PLANE_CTL_1_A) & ~(1u<<31));
+        (void)mmioRead32(PLANE_SURF_1_A);
+        IOSleep(2);
+
+        mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset);
+        mmioWrite32(PLANE_STRIDE_1_A, stride);
+
+        uint32_t planeCtl = (1u<<31) | (4u<<24) | (1u<<22) | (1u<<3);
+        mmioWrite32(PLANE_CTL_1_A, planeCtl);
+        mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset); /* trigger flip */
+        (void)mmioRead32(PLANE_SURF_1_A);
+
+        setProperty("FXE-EC-PLANE-CTL", (uint64_t)mmioRead32(PLANE_CTL_1_A), 32);
+        setProperty("FXE-EC-PLANE-SURF", (uint64_t)mmioRead32(PLANE_SURF_1_A), 32);
+        setProperty("FXE-EC-DONE", true);
+        LOG("enableController: Plane 1 armed with green fill");
+
+    } while (0);
+
     return kIOReturnSuccess;
 }
 IOItemCount FakeIrisXEFramebuffer::getConnectionCount() {
