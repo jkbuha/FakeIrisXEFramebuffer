@@ -55,6 +55,18 @@
 #define TGL_PW_CTL_IDX_AUX_A           21
 #define TGL_PW_CTL_IDX_AUX_B           22
 
+/* DC state control */
+#define DC_STATE_EN                     _MMIO(0x45504)
+#define   DC_STATE_DISABLE              0
+#define   DC_STATE_EN_DC5               REG_BIT(0)
+#define   DC_STATE_EN_DC6               REG_BIT(1)
+#define   DC_STATE_EN_DC9               REG_BIT(3)
+
+/* Fuse status — PG distribution status bits */
+#define SKL_FUSE_STATUS                 _MMIO(0x42000)
+#define   SKL_FUSE_PG_DIST_STATUS(pg)   REG_BIT(27 - (pg))
+/* PG0=bit27, PG1=bit26, PG2=bit25 */
+
 /* -----------------------------------------------------------------------
  * Display clock / CDCLK
  * --------------------------------------------------------------------- */

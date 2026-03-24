@@ -249,11 +249,80 @@ IOReturn FakeIrisXEFramebuffer::initGT() {
 }
 
 IOReturn FakeIrisXEFramebuffer::enablePowerWells() {
-    /* TGL confirmed sequence from hardware testing:
-     * PW1: write bits 1+2 to BIOS CTL (0x45400), status = 0x45408 bit30
-     * PW2: write bit 0 to DRV CTL (0x45404), status = 0xFF */
+    /* TGL uses the ICL+ PACKED power well register layout.
+     * ALL wells share ONE driver register at 0x45404 (HSW_PWR_WELL_CTL2).
+     * Each well gets 2 bits: REQ = bit(2*idx+1), STATE = bit(2*idx).
+     *
+     * HOWEVER: when the device-id is spoofed to ICL (0x8A52), the ICLLP
+     * framebuffer or WhateverGreen may have already enabled the power wells
+     * through their own path. The CTL2 register at 0x45404 reads 0xFF
+     * (only low 8 bits respond) — possibly locked or shadowed.
+     *
+     * BYPASS: If SKL_FUSE_STATUS shows PG1+PG2 fuse distribution is complete,
+     * the power gates are already up and we can skip the register writes.
+     * The fuse bits are read-only hardware status — they can't lie. */
 
-    /* PCI force D0 */
+    /* Check fuse distribution first — are power wells already on? */
+    uint32_t fuse = mmioRead32(SKL_FUSE_STATUS);
+    bool pg1_dist = (fuse & SKL_FUSE_PG_DIST_STATUS(1)) != 0; /* bit 26 */
+    bool pg2_dist = (fuse & SKL_FUSE_PG_DIST_STATUS(2)) != 0; /* bit 25 */
+    setProperty("FXE-FUSE-STATUS", (uint64_t)fuse, 32);
+    setProperty("FXE-FUSE-PG1-DIST", pg1_dist);
+    setProperty("FXE-FUSE-PG2-DIST", pg2_dist);
+
+    if (pg1_dist && pg2_dist) {
+        LOG("enablePowerWells: FUSE shows PG1+PG2 already distributed (0x%08x) — skipping register writes", fuse);
+        setProperty("FXE-PW-BYPASS", true);
+        setProperty("FXE-DC-OFF-OK", true);
+        setProperty("FXE-PW1-OK", true);
+        setProperty("FXE-PW2-OK", true);
+
+        /* Still do PCI D0 + GT/PUNIT ungating + MBUS/clocks */
+        _pciDevice->enablePCIPowerManagement(kPCIPMCSPowerStateD0);
+        _pciDevice->setBusMasterEnable(true);
+        _pciDevice->setMemoryEnable(true);
+        uint16_t pmcsr = _pciDevice->configRead16(0x84);
+        _pciDevice->configWrite16(0x84, pmcsr & ~0x3);
+        IODelay(10000);
+
+        mmioWrite32(0xA218, mmioRead32(0xA218) & ~0x1);
+        IODelay(10000);
+        mmioWrite32(0xA2B0, mmioRead32(0xA2B0) & ~0x80000000);
+        IODelay(15000);
+
+        /* DC states — ensure disabled */
+        mmioWrite32(DC_STATE_EN, DC_STATE_DISABLE);
+        IODelay(1000);
+
+        /* MBUS + display clocks */
+        mmioWrite32(0x7003C, 0xb1038c02);
+        IODelay(10000);
+        mmioWrite32(0x46010, 0xcc000000);
+        IODelay(10000);
+        mmioWrite32(0x46140, 0x10000000);
+        IODelay(10000);
+
+        setProperty("FXE-PW-CTL2-FINAL", (uint64_t)mmioRead32(0x45404), 32);
+        setProperty("FXE-DC-STATE-FINAL", (uint64_t)mmioRead32(DC_STATE_EN), 32);
+        LOG("enablePowerWells complete via fuse bypass — wells already up");
+        return kIOReturnSuccess;
+    }
+
+    LOG("enablePowerWells: FUSE PG1=%d PG2=%d — attempting register-based enable",
+        pg1_dist, pg2_dist);
+    setProperty("FXE-PW-BYPASS", false);
+
+    const uint32_t CTL2 = 0x45404;  /* THE packed driver register */
+
+    /* Bit positions: REQ=bit(2*idx+1), STATE=bit(2*idx) */
+    const uint32_t DC_OFF_REQ = (1u << (2 * TGL_PW_CTL_IDX_DC_OFF + 1)); /* bit19 */
+    const uint32_t DC_OFF_STA = (1u << (2 * TGL_PW_CTL_IDX_DC_OFF));     /* bit18 */
+    const uint32_t PW1_REQ    = (1u << (2 * TGL_PW_CTL_IDX_PW_1 + 1));   /* bit29 */
+    const uint32_t PW1_STA    = (1u << (2 * TGL_PW_CTL_IDX_PW_1));       /* bit28 */
+    const uint32_t PW2_REQ    = (1u << (2 * TGL_PW_CTL_IDX_PW_2 + 1));   /* bit27 */
+    const uint32_t PW2_STA    = (1u << (2 * TGL_PW_CTL_IDX_PW_2));       /* bit26 */
+
+    /* Step 0: Force PCI to D0 */
     _pciDevice->enablePCIPowerManagement(kPCIPMCSPowerStateD0);
     _pciDevice->setBusMasterEnable(true);
     _pciDevice->setMemoryEnable(true);
@@ -267,36 +336,97 @@ IOReturn FakeIrisXEFramebuffer::enablePowerWells() {
     mmioWrite32(0xA2B0, mmioRead32(0xA2B0) & ~0x80000000);
     IODelay(15000);
 
-    /* PW1: BIOS CTL register 0x45400, bits 1+2; status at 0x45408 bit30 */
-    mmioWrite32(0x45400, mmioRead32(0x45400) | 0x2);
-    IODelay(10000);
-    mmioWrite32(0x45400, mmioRead32(0x45400) | 0x4);
-    IODelay(10000);
-    bool pw1ok = false;
-    for (int t = 0; t < 50; t++) {
-        if (mmioRead32(0x45408) & (1u<<30)) { pw1ok = true; break; }
-        IODelay(1000);
-    }
-    if (!pw1ok) {
-        ERR("PW1 timeout (0x45408=0x%08x)", mmioRead32(0x45408));
-        return kIOReturnTimeout;
-    }
-    LOG("PW1 up");
+    /* Step 1: Disable DC states */
+    mmioWrite32(DC_STATE_EN, DC_STATE_DISABLE);
+    IODelay(1000);
+    setProperty("FXE-DC-STATE-AFTER", (uint64_t)mmioRead32(DC_STATE_EN), 32);
+    LOG("enablePowerWells: DC states disabled (0x45504=0x%08x)",
+        mmioRead32(DC_STATE_EN));
 
-    /* PW2: DRV CTL register 0x45404, bit0; status = 0xFF */
-    mmioWrite32(0x45404, mmioRead32(0x45404) | 0x1);
-    bool pw2ok = false;
-    for (int t = 0; t < 50; t++) {
-        if ((mmioRead32(0x45404) & 0xFF) == 0xFF) { pw2ok = true; break; }
-        IODelay(1000);
-    }
-    if (!pw2ok) {
-        ERR("PW2 timeout (0x45404=0x%08x)", mmioRead32(0x45404));
-        return kIOReturnTimeout;
-    }
-    LOG("PW2 up");
+    uint32_t ctl2_initial = mmioRead32(CTL2);
+    setProperty("FXE-PW-CTL2-INITIAL", (uint64_t)ctl2_initial, 32);
+    LOG("enablePowerWells: CTL2 initial=0x%08x", ctl2_initial);
 
-    /* MBUS + display clocks */
+    /* Step 2: Enable DC_OFF (idx=9) */
+    {
+        mmioWrite32(CTL2, mmioRead32(CTL2) | DC_OFF_REQ);
+        OSSynchronizeIO();
+        bool ok = false;
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(CTL2) & DC_OFF_STA) { ok = true; break; }
+            IODelay(100);
+        }
+        uint32_t after = mmioRead32(CTL2);
+        setProperty("FXE-DC-OFF-OK", ok);
+        setProperty("FXE-PW-CTL2-DCOFF", (uint64_t)after, 32);
+        LOG("enablePowerWells: DC_OFF %s (CTL2=0x%08x)", ok ? "OK" : "TIMEOUT", after);
+        if (!ok) {
+            ERR("DC_OFF timeout");
+            return kIOReturnTimeout;
+        }
+    }
+
+    /* Step 3: Enable PW1 (idx=14) */
+    {
+        mmioWrite32(CTL2, mmioRead32(CTL2) | PW1_REQ);
+        OSSynchronizeIO();
+        bool ok = false;
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(CTL2) & PW1_STA) { ok = true; break; }
+            IODelay(100);
+        }
+        uint32_t after = mmioRead32(CTL2);
+        setProperty("FXE-PW1-OK", ok);
+        setProperty("FXE-PW-CTL2-PW1", (uint64_t)after, 32);
+        LOG("enablePowerWells: PW1 %s (CTL2=0x%08x)", ok ? "OK" : "TIMEOUT", after);
+        if (!ok) {
+            ERR("PW1 timeout (CTL2=0x%08x)", after);
+            return kIOReturnTimeout;
+        }
+    }
+
+    /* Fuse distribution PG1 */
+    {
+        bool fuse_ok = false;
+        for (int t = 0; t < 100; t++) {
+            if (mmioRead32(SKL_FUSE_STATUS) & SKL_FUSE_PG_DIST_STATUS(1)) { fuse_ok = true; break; }
+            IODelay(10);
+        }
+        setProperty("FXE-FUSE-PG1", fuse_ok);
+        setProperty("FXE-FUSE-STATUS", (uint64_t)mmioRead32(SKL_FUSE_STATUS), 32);
+        if (!fuse_ok) LOG("enablePowerWells: FUSE PG1 dist not set (non-fatal)");
+    }
+
+    /* Step 4: Enable PW2 (idx=13) */
+    {
+        mmioWrite32(CTL2, mmioRead32(CTL2) | PW2_REQ);
+        OSSynchronizeIO();
+        bool ok = false;
+        for (int t = 0; t < 500; t++) {
+            if (mmioRead32(CTL2) & PW2_STA) { ok = true; break; }
+            IODelay(100);
+        }
+        uint32_t after = mmioRead32(CTL2);
+        setProperty("FXE-PW2-OK", ok);
+        setProperty("FXE-PW-CTL2-PW2", (uint64_t)after, 32);
+        LOG("enablePowerWells: PW2 %s (CTL2=0x%08x)", ok ? "OK" : "TIMEOUT", after);
+        if (!ok) {
+            ERR("PW2 timeout (CTL2=0x%08x)", after);
+            return kIOReturnTimeout;
+        }
+    }
+
+    /* Fuse distribution PG2 */
+    {
+        bool fuse_ok = false;
+        for (int t = 0; t < 100; t++) {
+            if (mmioRead32(SKL_FUSE_STATUS) & SKL_FUSE_PG_DIST_STATUS(2)) { fuse_ok = true; break; }
+            IODelay(10);
+        }
+        setProperty("FXE-FUSE-PG2", fuse_ok);
+    }
+
+    /* Step 5: MBUS + display clocks */
     mmioWrite32(0x7003C, 0xb1038c02);
     IODelay(10000);
     mmioWrite32(0x46010, 0xcc000000);
@@ -304,7 +434,12 @@ IOReturn FakeIrisXEFramebuffer::enablePowerWells() {
     mmioWrite32(0x46140, 0x10000000);
     IODelay(10000);
 
-    LOG("enablePowerWells complete");
+    /* Final state */
+    setProperty("FXE-PW-CTL2-FINAL", (uint64_t)mmioRead32(CTL2), 32);
+    setProperty("FXE-FUSE-FINAL",    (uint64_t)mmioRead32(SKL_FUSE_STATUS), 32);
+    setProperty("FXE-DC-STATE-FINAL", (uint64_t)mmioRead32(DC_STATE_EN), 32);
+
+    LOG("enablePowerWells complete — DC_OFF+PW1+PW2 up (CTL2=0x%08x)", mmioRead32(CTL2));
     return kIOReturnSuccess;
 }
 
@@ -548,199 +683,26 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
         forcewakeRelease();
     }
 
-    /* Extended PW register dump */
+    /* Power wells via corrected packed-register path */
     if (_mmioBase) {
-        /* BIOS registers (read-only, show what firmware enabled) */
-        setProperty("FXE-PW-BIOS1", (uint64_t)mmioRead32(0x45400), 32); /* CTL1 BIOS */
-        setProperty("FXE-PW-BIOS2", (uint64_t)mmioRead32(0x45408), 32); /* CTL2 BIOS (pw=1) */
-        setProperty("FXE-PW-BIOS3", (uint64_t)mmioRead32(0x45410), 32); /* CTL3 BIOS (pw=2) */
-        /* Driver registers */
-        setProperty("FXE-PW-DRV1",  (uint64_t)mmioRead32(0x45404), 32); /* CTL DRV pw=0 */
-        setProperty("FXE-PW-DRV2",  (uint64_t)mmioRead32(0x4540C), 32); /* CTL DRV pw=1 */
-        setProperty("FXE-PW-DRV3",  (uint64_t)mmioRead32(0x45414), 32); /* CTL DRV pw=2 */
-        setProperty("FXE-PW-DRV14", (uint64_t)mmioRead32(0x45474), 32); /* CTL DRV pw=14 */
-        setProperty("FXE-PW-DRV13", (uint64_t)mmioRead32(0x4546C), 32); /* CTL DRV pw=13 */
-        /* FUSE_STATUS */
-        setProperty("FXE-FUSE",     (uint64_t)mmioRead32(0x42000), 32);
-        /* DC_STATE */
-        setProperty("FXE-DC-STATE", (uint64_t)mmioRead32(0x45504), 32);
-        /* Check if PW already on via BIOS regs */
-        uint32_t bios1 = mmioRead32(0x45400);
-        uint32_t bios2 = mmioRead32(0x45408);
-        setProperty("FXE-PW1-BIOS-STA", (bios2 & 1) ? true : false);  /* state bit 0 of BIOS reg pw=1 */
-        setProperty("FXE-PW2-BIOS-STA", (mmioRead32(0x45410) & 1) ? true : false);
+        setProperty("FXE-PW-CTL1-BIOS",  (uint64_t)mmioRead32(0x45400), 32);
+        setProperty("FXE-PW-CTL2-DRV",   (uint64_t)mmioRead32(0x45404), 32);
+        setProperty("FXE-FUSE-PRE",      (uint64_t)mmioRead32(SKL_FUSE_STATUS), 32);
+        setProperty("FXE-DC-STATE-PRE",  (uint64_t)mmioRead32(DC_STATE_EN), 32);
     }
-    /* Wide register scan to find PW13/14 state */
-    if (_mmioBase) {
-        for (uint32_t off = 0x45400; off <= 0x45430; off += 4) {
-            uint32_t val = mmioRead32(off);
-            if (val != 0) {
-                char key[32];
-                snprintf(key, sizeof(key), "FXE-REG-0x%05x", off);
-                setProperty(key, (uint64_t)val, 32);
-            }
-        }
-        /* Also check ICL_PWR_WELL_CTL (may be at different base on TGL) */
-        setProperty("FXE-0x45410", (uint64_t)mmioRead32(0x45410), 32);
-        setProperty("FXE-0x45418", (uint64_t)mmioRead32(0x45418), 32);
-        setProperty("FXE-0x45420", (uint64_t)mmioRead32(0x45420), 32);
-        setProperty("FXE-0x45428", (uint64_t)mmioRead32(0x45428), 32);
-    }
-    /* Read the actual per-well registers for PW1/PW2 */
-    if (_mmioBase) {
-        /* PW1: BIOS=0x45470, DRV=0x45474 */
-        /* PW2: BIOS=0x45468, DRV=0x4546C */
-        setProperty("FXE-PW1-BIOS-0x45470", (uint64_t)mmioRead32(0x45470), 32);
-        setProperty("FXE-PW1-DRV-0x45474",  (uint64_t)mmioRead32(0x45474), 32);
-        setProperty("FXE-PW2-BIOS-0x45468", (uint64_t)mmioRead32(0x45468), 32);
-        setProperty("FXE-PW2-DRV-0x4546C",  (uint64_t)mmioRead32(0x4546C), 32);
-        /* Also DDI-A and AUX-A */
-        setProperty("FXE-DDIA-BIOS-0x45400", (uint64_t)mmioRead32(0x45400 + 0*8), 32);
-        setProperty("FXE-DDIA-DRV-0x45404",  (uint64_t)mmioRead32(0x45404 + 0*8), 32);
-    }
-    /* Check DC_OFF and attempt correct TGL power well sequence */
-    if (_mmioBase) {
-        uint32_t dc_off_bios = mmioRead32(0x45400 + 9*8); /* 0x45448 */
-        uint32_t dc_off_drv  = mmioRead32(0x45404 + 9*8); /* 0x4544C */
-        setProperty("FXE-DCOFF-BIOS-0x45448", (uint64_t)dc_off_bios, 32);
-        setProperty("FXE-DCOFF-DRV-0x4544C",  (uint64_t)dc_off_drv,  32);
 
-        /* Try enabling DC_OFF first, then PW1 */
-        /* Step 1: Request DC_OFF */
-        uint32_t req = HSW_PWR_WELL_CTL_REQ(0);   /* bit 1 = 0x2 */
-        uint32_t sta = HSW_PWR_WELL_CTL_STATE(0);  /* bit 0 = 0x1 */
+    IOReturn pwRet = enablePowerWells();
+    setProperty("FXE-PW-ENABLE-RET", (uint64_t)pwRet, 32);
+    bool pwOK = (pwRet == kIOReturnSuccess);
+    setProperty("FXE-SEQ-DONE", pwOK);
 
-        mmioWrite32(0x4544C, dc_off_drv | req);
-        OSSynchronizeIO();
-        for (int t = 0; t < 500; t++) {
-            if (mmioRead32(0x4544C) & sta) break;
-            IODelay(100);
-        }
-        uint32_t dc_off_after = mmioRead32(0x4544C);
-        setProperty("FXE-DCOFF-AFTER", (uint64_t)dc_off_after, 32);
-        bool dc_off_ok = (dc_off_after & sta) != 0;
-        setProperty("FXE-DCOFF-OK", dc_off_ok);
-
-        /* Step 2: Try PW1 after DC_OFF */
-        if (dc_off_ok) {
-            mmioWrite32(0x45474, req);
-            OSSynchronizeIO();
-            for (int t = 0; t < 500; t++) {
-                if (mmioRead32(0x45474) & sta) break;
-                IODelay(100);
-            }
-            uint32_t pw1_after = mmioRead32(0x45474);
-            setProperty("FXE-PW1-AFTER-DCOFF", (uint64_t)pw1_after, 32);
-            setProperty("FXE-PW1-OK-v2", (pw1_after & sta) != 0);
-        }
-    }
-    /* Raw write/read test on PW1 register */
-    if (_mmioBase) {
-        /* Read PW1 DRV before */
-        uint32_t pw1_before = mmioRead32(0x45474);
-        setProperty("FXE-PW1-RAW-BEFORE", (uint64_t)pw1_before, 32);
-
-        /* Write request bit */
-        mmioWrite32(0x45474, 0x2);
-        OSSynchronizeIO();
-        uint32_t pw1_immed = mmioRead32(0x45474);
-        setProperty("FXE-PW1-RAW-IMMED", (uint64_t)pw1_immed, 32);
-
-        /* Try writing 0xFFFFFFFF to see what bits stick */
-        mmioWrite32(0x45474, 0xFFFFFFFF);
-        OSSynchronizeIO();
-        uint32_t pw1_ff = mmioRead32(0x45474);
-        setProperty("FXE-PW1-RAW-FF", (uint64_t)pw1_ff, 32);
-
-        /* Restore */
-        mmioWrite32(0x45474, pw1_before);
-
-        /* Also try PW1 via the packed register approach
-         * Some TGL docs show PWR_WELL_CTL as a single register
-         * with all wells packed. Try 0x45400 directly with PW1 bits */
-        uint32_t packed = mmioRead32(0x45400);
-        setProperty("FXE-PACKED-0x45400", (uint64_t)packed, 32);
-        /* Bit 29=PW1_REQ, 28=PW1_STA in packed layout */
-        mmioWrite32(0x45400, packed | (1u<<29));
-        OSSynchronizeIO();
-        uint32_t packed_after = mmioRead32(0x45400);
-        setProperty("FXE-PACKED-AFTER", (uint64_t)packed_after, 32);
-        mmioWrite32(0x45400, packed); /* restore */
-    }
-    /* Implement pawan295 power well sequence exactly */
-    if (_mmioBase && _pciDevice) {
-
-        /* Step 1: Force PCI to D0 */
-        _pciDevice->enablePCIPowerManagement(kPCIPMCSPowerStateD0);
-        uint16_t pmcsr = _pciDevice->configRead16(0x84);
-        pmcsr &= ~0x3;
-        _pciDevice->configWrite16(0x84, pmcsr);
-        IOSleep(10);
-        setProperty("FXE-SEQ-PMCSR", (uint64_t)_pciDevice->configRead16(0x84), 16);
-
-        /* Step 2: Disable GT power gating */
-        uint32_t gt_pg = mmioRead32(0xA218);
-        mmioWrite32(0xA218, gt_pg & ~0x1);
-        IOSleep(10);
-        setProperty("FXE-SEQ-GT-PG", (uint64_t)mmioRead32(0xA218), 32);
-
-        /* Step 3: Disable PUNIT power gating */
-        uint32_t punit = mmioRead32(0xA2B0);
-        mmioWrite32(0xA2B0, punit & ~0x80000000);
-        IOSleep(15);
-        setProperty("FXE-SEQ-PUNIT", (uint64_t)mmioRead32(0xA2B0), 32);
-
-        /* Step 4: Power Well 1 — write to BIOS CTL (0x45400), bits 1+2 */
-        /* Status at 0x45408 bit 30 */
-        uint32_t pw1_ctl = mmioRead32(0x45400);
-        setProperty("FXE-SEQ-PW1-CTL-BEFORE", (uint64_t)pw1_ctl, 32);
-        mmioWrite32(0x45400, pw1_ctl | 0x2);
-        IOSleep(10);
-        mmioWrite32(0x45400, mmioRead32(0x45400) | 0x4);
-        IOSleep(10);
-
-        bool pw1_up = false;
-        for (int t = 0; t < 20; t++) {
-            if (mmioRead32(0x45408) & (1u << 30)) { pw1_up = true; break; }
-            IOSleep(10);
-        }
-        setProperty("FXE-SEQ-PW1-STATUS", (uint64_t)mmioRead32(0x45408), 32);
-        setProperty("FXE-SEQ-PW1-OK", pw1_up);
-
-        /* Step 5: Power Well 2 — write bit 0 to 0x45404, wait for 0xFF */
-        uint32_t pw2_ctl = mmioRead32(0x45404);
-        setProperty("FXE-SEQ-PW2-CTL-BEFORE", (uint64_t)pw2_ctl, 32);
-        mmioWrite32(0x45404, pw2_ctl | 0x1);
-
-        bool pw2_up = false;
-        for (int t = 0; t < 50; t++) {
-            if ((mmioRead32(0x45404) & 0xFF) == 0xFF) { pw2_up = true; break; }
-            IOSleep(10);
-        }
-        setProperty("FXE-SEQ-PW2-STATUS", (uint64_t)mmioRead32(0x45404), 32);
-        setProperty("FXE-SEQ-PW2-OK", pw2_up);
-
-        /* Step 6: MBUS */
-        mmioWrite32(0x7003C, 0xb1038c02);
-        IOSleep(10);
-        setProperty("FXE-SEQ-MBUS", (uint64_t)mmioRead32(0x7003C), 32);
-
-        /* Step 7: LCPLL1 */
-        mmioWrite32(0x46010, 0xcc000000);
-        IOSleep(10);
-        setProperty("FXE-SEQ-LCPLL1", (uint64_t)mmioRead32(0x46010), 32);
-
-        /* Step 8: TRANS_CLK_SEL_A */
-        mmioWrite32(0x46140, 0x10000000);
-        IOSleep(10);
-        setProperty("FXE-SEQ-TRANS-CLK", (uint64_t)mmioRead32(0x46140), 32);
-
-            setProperty("FXE-SEQ-DONE", pw1_up && pw2_up);
-
-        /* Display pipeline — only attempt if power wells are up */
-        if (pw1_up && pw2_up) do {
+    /* Display pipeline — only attempt if power wells are up */
+    if (pwOK) do {
             const uint32_t PIPE_SRC_A       = 0x6001C;
             const uint32_t PIPECONF_A       = 0x70008;
+            /* Plane 1 — confirmed working (produced red screen in first test).
+             * Pawan's TGL driver also uses Plane 1 exclusively.
+             * NDRV will eventually overwrite, but we get first frame. */
             const uint32_t PLANE_CTL_1_A    = 0x70180;
             const uint32_t PLANE_SURF_1_A   = 0x7019C;
             const uint32_t PLANE_STRIDE_1_A = 0x70188;
@@ -749,6 +711,7 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
 
             /* Step A: Allocate framebuffer (32MB) */
             const uint32_t fbSize = 32 * 1024 * 1024;
+            const uint32_t fbGGTTOffset = 0x800; /* pawan's proven offset */
             IOBufferMemoryDescriptor* fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
                 kernel_task,
                 kIODirectionInOut | kIOMemoryKernelUserShared,
@@ -764,13 +727,15 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
             setProperty("FXE-FB-PHYS", (uint64_t)fbMem->getPhysicalAddress(), 64);
             LOG("hwInitAsync: FB allocated phys=0x%llx", fbMem->getPhysicalAddress());
 
-            /* Step B: Map GGTT (BAR1 = GTTMMADR at PCI config 0x18/0x1C) */
+            /* Step B: Install GGTT PTEs via BAR1 (GTTMMADR)
+             * This is the proven working approach — our first test with BAR1
+             * produced a visible red screen. Pawan's driver also uses BAR1. */
             {
                 uint64_t bar1Lo = _pciDevice->configRead32(0x18) & ~0xFULL;
                 uint64_t bar1Hi = _pciDevice->configRead32(0x1C);
                 uint64_t gttPhys = (bar1Hi << 32) | bar1Lo;
                 setProperty("FXE-GTT-PHYS", gttPhys, 64);
-                LOG("hwInitAsync: GTTMMADR phys=0x%llx", gttPhys);
+                setProperty("FXE-GTT-METHOD", "BAR1");
 
                 IOMemoryDescriptor* gttDesc = IOMemoryDescriptor::withPhysicalAddress(
                     gttPhys, 0x1000000, kIODirectionInOut);
@@ -788,9 +753,9 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
                 }
 
                 volatile uint64_t* ggtt = (volatile uint64_t*)gttMap->getVirtualAddress();
-                const uint32_t fbGGTTOffset = 0x800;  /* aperture byte offset */
-                const uint32_t ggttBaseIndex = fbGGTTOffset >> 12;  /* = 0 */
+                const uint32_t ggttBaseIndex = fbGGTTOffset >> 12; /* = 0 for offset 0x800 */
                 const uint32_t kPageSize = 4096;
+                setProperty("FXE-GTT-BASE-INDEX", (uint64_t)ggttBaseIndex, 32);
 
                 /* Install PTEs */
                 IOByteCount offset = 0;
@@ -806,32 +771,45 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
                         ggtt[ggttBaseIndex + page] = (phys & ~0xFFFULL) | 0x3;
                     }
                 }
+                OSSynchronizeIO();
+
+                /* Verify first PTE */
+                uint64_t pte0 = ggtt[ggttBaseIndex];
+                setProperty("FXE-GTT-PTE0", pte0, 64);
                 setProperty("FXE-GTT-PAGES", (uint64_t)page, 32);
-                LOG("hwInitAsync: %u GGTT pages installed at index %u", page, ggttBaseIndex);
+                LOG("hwInitAsync: %u GGTT PTEs at index %u (PTE0=0x%llx)", page, ggttBaseIndex, pte0);
 
                 gttMap->release();
                 gttDesc->release();
             }
 
-            /* Step C: Fill framebuffer with solid colour (blue = 0x000000FF) for test */
+            /* Step C: Read BIOS resolution and fill framebuffer GREEN */
+            uint32_t pipeSrc = mmioRead32(PIPE_SRC_A);
+            setProperty("FXE-PIPE-SRC-BIOS", (uint64_t)pipeSrc, 32);
+            uint32_t dispW = ((pipeSrc >> 16) & 0xFFFF) + 1;
+            uint32_t dispH = (pipeSrc & 0xFFFF) + 1;
+            if (dispW < 640 || dispW > 3840) dispW = 1920;
+            if (dispH < 480 || dispH > 2400) dispH = 1200;
+            setProperty("FXE-REAL-WIDTH",  (uint64_t)dispW, 32);
+            setProperty("FXE-REAL-HEIGHT", (uint64_t)dispH, 32);
+
             {
                 uint32_t* pixels = (uint32_t*)fbMem->getBytesNoCopy();
                 if (pixels) {
-                    uint32_t count = (1920 * 1080);
-                    for (uint32_t i = 0; i < count; i++) pixels[i] = 0x000000FF;
+                    uint32_t count = dispW * dispH;
+                    if (count > fbSize / 4) count = fbSize / 4;
+                    for (uint32_t i = 0; i < count; i++) pixels[i] = 0x0000FF00;
+                    setProperty("FXE-FILL-PIXELS", (uint64_t)count, 32);
                 }
             }
 
-            /* Step D: Program plane geometry */
-            uint32_t pipeSrc = mmioRead32(PIPE_SRC_A);
-            setProperty("FXE-PIPE-SRC-BIOS", (uint64_t)pipeSrc, 32);
-            if (!pipeSrc) mmioWrite32(PIPE_SRC_A, ((1920-1)<<16)|(1080-1));
-
+            /* Step D: Program Plane 1 geometry */
+            uint32_t stride = (dispW * 4) / 64;
             mmioWrite32(PLANE_POS_1_A,  0x00000000);
-            mmioWrite32(PLANE_SIZE_1_A, ((1080-1)<<16)|(1920-1));
-            mmioWrite32(PLANE_STRIDE_1_A, (1920*4) / 64);  /* 120 blocks */
+            mmioWrite32(PLANE_SIZE_1_A, ((dispH-1)<<16)|(dispW-1));
+            mmioWrite32(PLANE_STRIDE_1_A, stride);
 
-            /* Watermarks */
+            /* Pipe-level watermarks (proven by pawan's driver) */
             mmioWrite32(0xC4060, 0x00003FFF);
             mmioWrite32(0xC4064, 0x00000010);
             mmioWrite32(0xC4068, 0x00000020);
@@ -841,37 +819,26 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
 
             /* Step E: Disable plane, write surface, re-enable */
             mmioWrite32(PLANE_CTL_1_A, mmioRead32(PLANE_CTL_1_A) & ~(1u<<31));
-            (void)mmioRead32(PLANE_SURF_1_A);  /* flush */
+            (void)mmioRead32(PLANE_SURF_1_A);
             IOSleep(2);
 
-            mmioWrite32(PLANE_SURF_1_A, 0x800);  /* GGTT offset */
-            mmioWrite32(PLANE_STRIDE_1_A, (1920*4) / 64);
+            mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset);
+            mmioWrite32(PLANE_STRIDE_1_A, stride);
 
-            uint32_t planeCtl = (1u<<31)|(0u<<24)|(1u<<3);  /* enable+XRGB8888+PipeA */
+            /* PLANE_CTL: enable(31) | XRGB8888(4<<24) | pipe gamma(22) | PipeA(3) */
+            uint32_t planeCtl = (1u<<31) | (4u<<24) | (1u<<22) | (1u<<3);
             mmioWrite32(PLANE_CTL_1_A, planeCtl);
-            mmioWrite32(PLANE_SURF_1_A, 0x800);  /* re-write to trigger flip */
+            mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset); /* trigger flip */
             (void)mmioRead32(PLANE_SURF_1_A);
 
             setProperty("FXE-PLANE-CTL-FINAL",  (uint64_t)mmioRead32(PLANE_CTL_1_A), 32);
             setProperty("FXE-PLANE-SURF-FINAL", (uint64_t)mmioRead32(PLANE_SURF_1_A), 32);
-
-            /* PIPECONF */
-            uint32_t pipeconf = mmioRead32(PIPECONF_A);
-            if (!(pipeconf & (1u<<31))) {
-                mmioWrite32(PIPECONF_A, pipeconf|(1u<<31)|(1u<<30));
-                IOSleep(5);
-            }
-            setProperty("FXE-PIPECONF-FINAL", (uint64_t)mmioRead32(PIPECONF_A), 32);
-
-            /* Panel power */
-            mmioWrite32(0xC7200, mmioRead32(0xC7200) | 1);
-            setProperty("FXE-PP-CTL-FINAL", (uint64_t)mmioRead32(0xC7200), 32);
+            setProperty("FXE-PIPECONF-FINAL",   (uint64_t)mmioRead32(PIPECONF_A), 32);
 
             setProperty("FXE-DISPLAY-INIT", true);
-            LOG("hwInitAsync: display pipeline complete — screen should show blue");
+            LOG("hwInitAsync: Plane 1 armed with green fill — screen should show green");
 
         } while (0); /* display pipeline block */
-    }
     setProperty("FXE-Test-Done", true);
     LOG("requestProbe: HW test complete");
     return kIOReturnSuccess;
