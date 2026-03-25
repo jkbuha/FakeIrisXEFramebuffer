@@ -332,4 +332,5 @@ dependencies: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOBufferMemoryDescriptor.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/DriverKit/IOBufferMemoryDescriptor.h \
   /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEExeclist.hpp \
-  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEGEM.hpp
+  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEGEM.hpp \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOTimerEventSource.h

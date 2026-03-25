@@ -10,6 +10,7 @@
 
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IOTimerEventSource.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <libkern/OSByteOrder.h>
 
@@ -118,6 +119,9 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
 
 void FakeIrisXEFramebuffer::stop(IOService *provider) {
     LOG("stop");
+
+    /* Stop NDRV hijack state */
+    _flipRunning = false;
 
     /* Tear down subsystems */
     if (_execlist) { _execlist->teardown(); OSSafeReleaseNULL(_execlist); }

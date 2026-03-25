@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>FakeIrisXEFramebuffer</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.anomy.driver.FakeIrisXEFramebuffer</string>
+	<key>CFBundleName</key>
+	<string>FakeIrisXEFramebuffer</string>
+	<key>CFBundlePackageType</key>
+	<string>KEXT</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>FakeIrisXEFramebuffer</key>
+		<dict>
+			<key>AAPL,HasPanel</key>
+			<integer>1</integer>
+			<key>IOClass</key>
+			<string>FakeIrisXEFramebuffer</string>
+			<key>IOFramebufferOpenGLIndex</key>
+			<integer>0</integer>
+			<key>IOKitDebug</key>
+			<integer>65535</integer>
+			<key>IOPCIPrimaryMatch</key>
+			<string>0x8A528086 0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
+			<key>IOProbeScore</key>
+			<integer>60000</integer>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
+			<key>IOMatchCategory</key>
+			<string>IOFramebuffer</string>
+			<key>IOUserClientDefaultLocking</key>
+			<true/>
+			<key>IOUserClientEntitlements</key>
+			<false/>
+			<key>built-in</key>
+			<data>
+			AA==
+			</data>
+		</dict>
+	</dict>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.iokit.IOACPIFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.iokit.IOGraphicsFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.iokit.IOPCIFamily</key>
+		<string>1.0.0</string>
+		<key>com.apple.kpi.bsd</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.iokit</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>24.0.0</string>
+		<key>com.apple.kpi.unsupported</key>
+		<string>24.0.0</string>
+	</dict>
+</dict>
+</plist>

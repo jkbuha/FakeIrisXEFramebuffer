@@ -172,6 +172,11 @@ private:
     static const uint32_t kDisplayHeight = 1080;
     static const uint32_t kBytesPerPixel = 4;
     static const uint32_t kStride        = kDisplayWidth * kBytesPerPixel; /* 7680 */
+
+    /* NDRV displacement state */
+    volatile bool         _flipRunning   = false;
+    uint32_t              _flipGGTTOff   = 0;
+    uint32_t              _flipPlaneCtl  = 0;
 };
 
 #endif /* FAKEIRISXEFRAMEBUFFER_HPP */
