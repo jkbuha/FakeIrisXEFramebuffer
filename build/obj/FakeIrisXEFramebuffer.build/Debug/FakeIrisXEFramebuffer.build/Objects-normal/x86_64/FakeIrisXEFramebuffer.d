@@ -265,13 +265,16 @@ dependencies: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/os/alloc_util.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/os/cpp_util.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/libkern/OSAtomic.h \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOTimerEventSource.h \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOEventSource.h \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOWorkLoop.h \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOBufferMemoryDescriptor.h \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/DriverKit/IOBufferMemoryDescriptor.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/pci/IOPCIDevice.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/pci/IOPCIFamilyDefinitions.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/os/availability.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/PCIDriverKit/IOPCIDevice.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/DriverKit/IOTypes.h \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOEventSource.h \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOWorkLoop.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/graphics/IOFramebuffer.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOInterruptEventSource.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/graphics/IOGraphicsDevice.h \
@@ -327,10 +330,7 @@ dependencies: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/i386/_mcontext.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/sys/_types/_sigaltstack.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/sys/_types/_ucontext.h \
-  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/i915_reg.h \
   /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEGuC.hpp \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOBufferMemoryDescriptor.h \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/DriverKit/IOBufferMemoryDescriptor.h \
+  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/i915_reg.h \
   /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEExeclist.hpp \
-  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEGEM.hpp \
-  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk/System/Library/Frameworks/Kernel.framework/Headers/IOKit/IOTimerEventSource.h
+  /Users/jkbuha/Sources/FakeIrisXEFramebuffer/FakeIrisXEGEM.hpp

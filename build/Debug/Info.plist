@@ -33,9 +33,11 @@
 			<key>IOPCIPrimaryMatch</key>
 			<string>0x8A528086 0x9A498086 0x9A408086 0x9A598086 0x9A608086 0x9A688086 0x9A788086</string>
 			<key>IOProbeScore</key>
-			<integer>50000</integer>
+			<integer>60000</integer>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
+			<key>IOMatchCategory</key>
+			<string>IOFramebuffer</string>
 			<key>IOUserClientDefaultLocking</key>
 			<true/>
 			<key>IOUserClientEntitlements</key>

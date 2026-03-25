@@ -1,5 +1,6 @@
 /* FakeIrisXEFramebuffer.cpp
- * Main IOFramebuffer subclass — GT power-up, display pipeline, MMIO engine
+ * Main IOFramebuffer subclass — complete pawan-style IOFramebuffer implementation
+ * with our proven Tiger Lake hardware init (power wells, GGTT, display pipeline)
  */
 
 #include "FakeIrisXEFramebuffer.hpp"
@@ -12,28 +13,19 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/pci/IOPCIDevice.h>
+#include <IOKit/graphics/IODisplay.h>
 #include <libkern/OSByteOrder.h>
 
-/* -----------------------------------------------------------------------
- * OSDefineMetaClassAndStructors
- * --------------------------------------------------------------------- */
 OSDefineMetaClassAndStructors(FakeIrisXEFramebuffer, IOFramebuffer)
-/* Explicit parent alias — avoids Tahoe SDK `using super = OSAction` pollution */
 #define KEXT_SUPER IOFramebuffer
 
-/* -----------------------------------------------------------------------
- * Logging
- * --------------------------------------------------------------------- */
 #define LOG(fmt, ...) IOLog("FakeIrisXEFramebuffer: " fmt "\n", ##__VA_ARGS__)
 #define ERR(fmt, ...) IOLog("FakeIrisXEFramebuffer ERROR: " fmt "\n", ##__VA_ARGS__)
 
-/* -----------------------------------------------------------------------
- * Display mode table — single mode: 1920×1080 @ 60 Hz
- * --------------------------------------------------------------------- */
 static const IODisplayModeID kModeID_1080p = 1;
 
 /* ═══════════════════════════════════════════════════════════════════════
- * IOService lifecycle
+ * IOService lifecycle — pawan architecture
  * ═══════════════════════════════════════════════════════════════════════ */
 
 bool FakeIrisXEFramebuffer::init(OSDictionary *dict) {
@@ -43,14 +35,13 @@ bool FakeIrisXEFramebuffer::init(OSDictionary *dict) {
 }
 
 bool FakeIrisXEFramebuffer::start(IOService *provider) {
-    LOG("start — deferring all hardware access to enableController()");
+    LOG("start — full IOFramebuffer init");
 
     _pciDevice = OSDynamicCast(IOPCIDevice, provider);
-    if (!_pciDevice) {
-        ERR("provider is not IOPCIDevice");
-        return false;
-    }
+    if (!_pciDevice) { ERR("provider is not IOPCIDevice"); return false; }
     _pciDevice->retain();
+    _pciDevice->setBusMasterEnable(true);
+    _pciDevice->setMemoryEnable(true);
 
     if (mapMMIO() != kIOReturnSuccess) {
         ERR("MMIO mapping failed");
@@ -58,23 +49,82 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
         return false;
     }
 
+    /* Allocate framebuffer BEFORE super::start() */
+    {
+        const uint32_t fbSize = 32 * 1024 * 1024;
+        _fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+            kernel_task,
+            kIODirectionInOut | kIOMemoryKernelUserShared,
+            fbSize, 0x000000003FFFF000ULL);
+        if (!_fbMem || _fbMem->prepare() != kIOReturnSuccess) {
+            ERR("FB alloc failed");
+            if (_fbMem) { _fbMem->release(); _fbMem = nullptr; }
+            return false;
+        }
+        _fbPhysAddr = _fbMem->getPhysicalAddress();
+        _fbSize = fbSize;
+        uint32_t *px = (uint32_t*)_fbMem->getBytesNoCopy();
+        if (px) for (uint32_t i = 0; i < fbSize/4; i++) px[i] = 0x0000FF00;
+        LOG("start: FB phys=0x%llx", (uint64_t)_fbPhysAddr);
+    }
+
+    /* Allocate cursor buffer */
+    _cursorMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+        kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared,
+        4096, 0x000000003FFFF000ULL);
+    if (_cursorMem) {
+        _cursorMem->prepare();
+        bzero(_cursorMem->getBytesNoCopy(), 4096);
+    }
+
+    /* Init lock and interrupt list */
+    _lock = IOLockAlloc();
+    _interruptList = OSArray::withCapacity(4);
+
+    /* Initialize state */
+    _currentMode  = 1;
+    _currentDepth = 0;
+
+    /* Set critical properties BEFORE super::start() */
+    setProperty("AAPL,boot-display", kOSBooleanTrue);
+    setProperty("IOFBOnline", kOSBooleanTrue);
+    setProperty("IOFBMemoryAccessable", kOSBooleanTrue);
+    setProperty("IOFBCPUAccessable", kOSBooleanTrue);
+    setProperty("IOFBPixelFormat", "XRGB8888");
+    setProperty("IOFBBitsPerPixel", (uint64_t)32, 32);
+    setProperty("IOFBBytesPerRow", (uint64_t)(kDisplayWidth * 4), 32);
+    setProperty("IOFBDisplayModeCount", (uint64_t)1, 32);
+    setProperty("IOFBIsMainDisplay", kOSBooleanTrue);
+    setProperty("IOFBCursorSupported", kOSBooleanTrue);
+    setProperty("AAPL,HasPanel", kOSBooleanTrue);
+    setProperty("built-in", kOSBooleanTrue);
+    setProperty("IOFramebufferConsoleKey", kOSBooleanFalse);
+
+    /* super::start() — triggers IOFramebuffer machinery + enableController() */
     if (!KEXT_SUPER::start(provider)) {
         ERR("super::start failed");
         return false;
     }
 
+    /* Power management */
+    static IOPMPowerState powerStates[] = {
+        {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+        {1, 0, kIOPMSleepCapability, kIOPMSleep, 0, 0, 0, 0, 0, 0, 0, 0},
+        {1, 0, kIOPMDoze, kIOPMDoze, 0, 0, 0, 0, 0, 0, 0, 0},
+        {1, kIOPMPowerOn, kIOPMPowerOn, kIOPMPowerOn, 0, 0, 0, 0, 0, 0, 0, 0}
+    };
+    registerPowerDriver(this, powerStates, 4);
+    changePowerStateTo(3);
+
+    /* CD clock reprogram */
     {
         uint32_t cdclk  = mmioRead32(0x46000);
         uint32_t dssm   = mmioRead32(0x51004);
-        uint32_t cdfreq = cdclk & 0x7FF;
-        uint32_t refclk = (dssm >> 29) & 0x7;
         setProperty("FXE-CDCLK_CTL",  (uint64_t)cdclk,  32);
         setProperty("FXE-DSSM",       (uint64_t)dssm,   32);
-        setProperty("FXE-CDFreqField", (uint64_t)cdfreq, 16);
-        setProperty("FXE-CDClkOK",    cdfreq >= 0x50E);
-        setProperty("FXE-RefClkIdx",  (uint64_t)refclk,  8);
+        setProperty("FXE-CDFreqField", (uint64_t)(cdclk & 0x7FF), 16);
+        setProperty("FXE-RefClkIdx",  (uint64_t)((dssm >> 29) & 0x7),  8);
     }
-
     {
         uint32_t cdfreq = mmioRead32(0x46000) & 0x7FF;
         if (cdfreq < 0x50E) {
@@ -88,48 +138,65 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
             uint32_t ctl = mmioRead32(0x46000);
             mmioWrite32(0x46000, (ctl & ~0x7FF) | 0x518);
             OSSynchronizeIO();
-            uint32_t after = mmioRead32(0x46000) & 0x7FF;
-            setProperty("FXE-CDFreqAfter", (uint64_t)after, 16);
-            setProperty("FXE-PLLAfter",    (uint64_t)mmioRead32(0x46070), 32);
         }
     }
-    LOG("start complete — enableController() called by WindowServer or fxe_test");
+
+    /* Schedule force GUI transition after 2 seconds */
+    {
+        IOWorkLoop *wl = getWorkLoop();
+        if (wl) {
+            _forceGUITimer = IOTimerEventSource::timerEventSource(this, forceGUITimerFired);
+            if (_forceGUITimer) {
+                wl->addEventSource(_forceGUITimer);
+                _forceGUITimer->setTimeoutMS(2000);
+                LOG("start: force GUI timer scheduled for 2s");
+            }
+        }
+    }
+
+    LOG("start complete");
     return true;
 }
-
-
 
 void FakeIrisXEFramebuffer::stop(IOService *provider) {
     LOG("stop");
 
-    /* Stop NDRV hijack state */
-    _flipRunning = false;
+    if (_vsyncTimer) {
+        _vsyncTimer->cancelTimeout();
+        IOWorkLoop *wl = getWorkLoop();
+        if (wl) wl->removeEventSource(_vsyncTimer);
+        OSSafeReleaseNULL(_vsyncTimer);
+    }
+    if (_forceGUITimer) {
+        _forceGUITimer->cancelTimeout();
+        IOWorkLoop *wl = getWorkLoop();
+        if (wl) wl->removeEventSource(_forceGUITimer);
+        OSSafeReleaseNULL(_forceGUITimer);
+    }
 
-    /* Tear down subsystems */
     if (_execlist) { _execlist->teardown(); OSSafeReleaseNULL(_execlist); }
     if (_guc)      { _guc->unload();        OSSafeReleaseNULL(_guc); }
     if (_gem)      { _gem->free();          OSSafeReleaseNULL(_gem); }
 
     forcewakeRelease();
 
-    if (_fbMemDesc) {
-        _fbMemDesc->complete();
-        OSSafeReleaseNULL(_fbMemDesc);
-    }
+    if (_fbMem)     { _fbMem->complete();     OSSafeReleaseNULL(_fbMem); }
+    if (_cursorMem) { _cursorMem->complete();  OSSafeReleaseNULL(_cursorMem); }
+    if (_vramRange) { OSSafeReleaseNULL(_vramRange); }
+    if (_interruptList) { OSSafeReleaseNULL(_interruptList); }
+    if (_lock)      { IOLockFree(_lock); _lock = nullptr; }
 
     if (_mmioMap)   { _mmioMap->unmap(); OSSafeReleaseNULL(_mmioMap); }
     if (_pciDevice) { OSSafeReleaseNULL(_pciDevice); }
 
     KEXT_SUPER::stop(provider);
+    LOG("stop complete");
 }
 
 void FakeIrisXEFramebuffer::free() {
+    LOG("free");
     KEXT_SUPER::free();
 }
-
-/* ═══════════════════════════════════════════════════════════════════════
- * MMIO
- * ═══════════════════════════════════════════════════════════════════════ */
 
 IOReturn FakeIrisXEFramebuffer::mapMMIO() {
     /* BAR0 is the primary MMIO aperture on Intel iGPUs */
@@ -831,10 +898,9 @@ IOReturn FakeIrisXEFramebuffer::requestProbe(IOOptionBits options) {
 }
 
 
+
+
 IOReturn FakeIrisXEFramebuffer::enableController() {
-    /* Run display pipeline init ONCE, before WindowServer starts.
-     * This is the window where NDRV hasn't begun flipping Plane 1 yet.
-     * Pawan's TGL driver uses the same approach. */
     static bool hasRun = false;
     if (hasRun) {
         LOG("enableController: already ran — skipping");
@@ -866,18 +932,12 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
         const uint32_t PLANE_SIZE_1_A   = 0x70190;
         const uint32_t PLANE_POS_1_A    = 0x7018C;
 
-        /* Allocate framebuffer (32MB) */
-        const uint32_t fbSize = 32 * 1024 * 1024;
+        /* Use framebuffer pre-allocated in start() */
+        const uint32_t fbSize = (uint32_t)_fbSize;
         const uint32_t fbGGTTOffset = 0x800;
-        IOBufferMemoryDescriptor* fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-            kernel_task,
-            kIODirectionInOut | kIOMemoryKernelUserShared,
-            fbSize,
-            0x000000003FFFF000ULL
-        );
-        if (!fbMem || fbMem->prepare() != kIOReturnSuccess) {
-            ERR("enableController: FB alloc failed");
-            if (fbMem) { fbMem->release(); }
+        IOBufferMemoryDescriptor* fbMem = _fbMem;
+        if (!fbMem) {
+            ERR("enableController: _fbMem not allocated");
             break;
         }
         setProperty("FXE-EC-FB-PHYS", (uint64_t)fbMem->getPhysicalAddress(), 64);
@@ -890,9 +950,9 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
 
             IOMemoryDescriptor* gttDesc = IOMemoryDescriptor::withPhysicalAddress(
                 gttPhys, 0x1000000, kIODirectionInOut);
-            if (!gttDesc) { fbMem->release(); break; }
+            if (!gttDesc) { break; }
             IOMemoryMap* gttMap = gttDesc->map();
-            if (!gttMap) { gttDesc->release(); fbMem->release(); break; }
+            if (!gttMap) { gttDesc->release(); break; }
 
             volatile uint64_t* ggtt = (volatile uint64_t*)gttMap->getVirtualAddress();
             const uint32_t ggttBaseIndex = fbGGTTOffset >> 12;
@@ -913,7 +973,6 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
             }
             OSSynchronizeIO();
             setProperty("FXE-EC-GTT-PAGES", (uint64_t)page, 32);
-
             gttMap->release();
             gttDesc->release();
         }
@@ -960,68 +1019,63 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
 
         uint32_t planeCtl = (1u<<31) | (4u<<24) | (1u<<22) | (1u<<3);
         mmioWrite32(PLANE_CTL_1_A, planeCtl);
-        mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset); /* trigger flip */
+        mmioWrite32(PLANE_SURF_1_A, fbGGTTOffset);
         (void)mmioRead32(PLANE_SURF_1_A);
 
         setProperty("FXE-EC-PLANE-CTL", (uint64_t)mmioRead32(PLANE_CTL_1_A), 32);
         setProperty("FXE-EC-PLANE-SURF", (uint64_t)mmioRead32(PLANE_SURF_1_A), 32);
         setProperty("FXE-EC-DONE", true);
+        _displayInit = true;
         LOG("enableController: Plane 1 armed with green fill");
 
     } while (0);
 
     return kIOReturnSuccess;
 }
-IOItemCount FakeIrisXEFramebuffer::getConnectionCount() {
-    return 1;
-}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * IOFramebuffer API — complete implementation
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+IOItemCount FakeIrisXEFramebuffer::getConnectionCount() { return 1; }
 
 IOReturn FakeIrisXEFramebuffer::getAttributeForConnection(IOIndex connectIndex,
                                                             IOSelect attribute,
                                                             uintptr_t *value) {
     if (!value) return kIOReturnBadArgument;
-
     switch (attribute) {
         case kConnectionSupportsHLDDCSense:
         case kConnectionSupportsLLDDCSense:
-        /* kConnectionSupportsMonitorEdidAccess removed from Tahoe SDK — use raw value */
         case (IOSelect)0x00000406:
             *value = 1;
             return kIOReturnSuccess;
         default:
-            return IOFramebuffer::getAttributeForConnection(connectIndex, attribute, value);
+            return KEXT_SUPER::getAttributeForConnection(connectIndex, attribute, value);
     }
 }
 
 IOReturn FakeIrisXEFramebuffer::setAttributeForConnection(IOIndex connectIndex,
                                                             IOSelect attribute,
                                                             uintptr_t value) {
-    return IOFramebuffer::setAttributeForConnection(connectIndex, attribute, value);
+    return KEXT_SUPER::setAttributeForConnection(connectIndex, attribute, value);
 }
 
-bool FakeIrisXEFramebuffer::isConsoleDevice() {
-    return false;
-}
+bool FakeIrisXEFramebuffer::isConsoleDevice() { return true; }
 
-/* getApertureRange — pure virtual. Returns IODeviceMemory for the FB aperture. */
 IODeviceMemory * FakeIrisXEFramebuffer::getApertureRange(IOPixelAperture aperture) {
     if (!_fbMem) return nullptr;
     IOPhysicalAddress phys = _fbMem->getPhysicalAddress();
-    IOByteCount      len  = _fbMem->getLength();
-    LOG("getApertureRange aperture=%d phys=0x%llx len=0x%llx", aperture, (uint64_t)phys, (uint64_t)len);
+    IOByteCount len = _fbMem->getLength();
     return IODeviceMemory::withRange(phys, len);
 }
 
-/* getPixelFormats — pure virtual. Null-separated, double-null-terminated string list. */
 const char * FakeIrisXEFramebuffer::getPixelFormats(void) {
-    static const char fmt[] = IO32BitDirectPixels "\0";
+    static const char fmt[] = "XRGB8888\0";
     return fmt;
 }
 
-/* getDisplayModeCount — pure virtual. */
-IOItemCount FakeIrisXEFramebuffer::getDisplayModeCount(void) {
-    return 1;
-}
+IOItemCount FakeIrisXEFramebuffer::getDisplayModeCount(void) { return 1; }
 
 IOReturn FakeIrisXEFramebuffer::getDisplayModes(IODisplayModeID *allDisplayModes) {
     if (!allDisplayModes) return kIOReturnBadArgument;
@@ -1056,9 +1110,7 @@ IOReturn FakeIrisXEFramebuffer::getStartupDisplayMode(IODisplayModeID *displayMo
 IOReturn FakeIrisXEFramebuffer::getTimingInfoForDisplayMode(IODisplayModeID modeID,
                                                               IOTimingInformation *info) {
     if (!info || modeID != kModeID_1080p) return kIOReturnBadArgument;
-
     memset(info, 0, sizeof(*info));
-    /* 1920x1080 @ 60Hz CEA-861 */
     info->appleTimingID = (IOAppleTimingID)0x57;
     info->detailedInfo.v2.horizontalActive          = kDisplayWidth;
     info->detailedInfo.v2.horizontalBlanking        = 280;
@@ -1068,19 +1120,18 @@ IOReturn FakeIrisXEFramebuffer::getTimingInfoForDisplayMode(IODisplayModeID mode
     info->detailedInfo.v2.verticalBlanking          = 45;
     info->detailedInfo.v2.verticalSyncOffset        = 4;
     info->detailedInfo.v2.verticalSyncPulseWidth    = 5;
-    info->detailedInfo.v2.pixelClock                = 148500;  /* kHz */
+    info->detailedInfo.v2.pixelClock                = 148500;
     return kIOReturnSuccess;
 }
 
 IOReturn FakeIrisXEFramebuffer::getInformationForDisplayMode(IODisplayModeID modeID,
                                                                IODisplayModeInformation *info) {
     if (!info || modeID != kModeID_1080p) return kIOReturnBadArgument;
-
     memset(info, 0, sizeof(*info));
     info->maxDepthIndex    = 0;
     info->nominalWidth     = kDisplayWidth;
     info->nominalHeight    = kDisplayHeight;
-    info->refreshRate      = 60 << 16; /* 60.0 Hz in 16.16 fixed point */
+    info->refreshRate      = 60 << 16;
     info->flags            = kDisplayModeSafeFlag | kDisplayModeValidFlag;
     return kIOReturnSuccess;
 }
@@ -1089,13 +1140,11 @@ IOReturn FakeIrisXEFramebuffer::getPixelInformation(IODisplayModeID displayMode,
                                                       IOIndex depth,
                                                       IOPixelAperture aperture,
                                                       IOPixelInformation *pixelInfo) {
-    if (!pixelInfo || displayMode != kModeID_1080p)
+    if (!pixelInfo || displayMode != kModeID_1080p || depth != 0)
         return kIOReturnBadArgument;
 
     memset(pixelInfo, 0, sizeof(*pixelInfo));
-    strncpy(pixelInfo->pixelFormat, IO32BitDirectPixels,
-            sizeof(pixelInfo->pixelFormat) - 1);
-
+    strlcpy(pixelInfo->pixelFormat, "XRGB8888", sizeof(pixelInfo->pixelFormat));
     pixelInfo->activeWidth       = kDisplayWidth;
     pixelInfo->activeHeight      = kDisplayHeight;
     pixelInfo->bytesPerRow       = kStride;
@@ -1103,17 +1152,14 @@ IOReturn FakeIrisXEFramebuffer::getPixelInformation(IODisplayModeID displayMode,
     pixelInfo->bitsPerPixel      = 32;
     pixelInfo->componentCount    = 3;
     pixelInfo->bitsPerComponent  = 8;
-    pixelInfo->componentMasks[0] = 0x00FF0000; /* R */
-    pixelInfo->componentMasks[1] = 0x0000FF00; /* G */
-    pixelInfo->componentMasks[2] = 0x000000FF; /* B */
-    pixelInfo->flags             = 0;
-    /* apertureSample field removed from IOPixelInformation in Tahoe SDK */
+    pixelInfo->componentMasks[0] = 0x00FF0000;
+    pixelInfo->componentMasks[1] = 0x0000FF00;
+    pixelInfo->componentMasks[2] = 0x000000FF;
     return kIOReturnSuccess;
 }
 
 UInt64 FakeIrisXEFramebuffer::getPixelFormatsForDisplayMode(IODisplayModeID modeID,
                                                               IOIndex depth) {
-    /* Return bit 0 set = pixel format index 0 (IO32BitDirectPixels) is supported */
     return 0x1;
 }
 
@@ -1126,16 +1172,175 @@ IOReturn FakeIrisXEFramebuffer::connectFlags(IOIndex connectIndex,
 }
 
 IOReturn FakeIrisXEFramebuffer::setCursorImage(void *cursorImage) {
-    return kIOReturnUnsupported; /* software cursor via WindowServer */
+    return kIOReturnSuccess;
 }
 
 IOReturn FakeIrisXEFramebuffer::setCursorState(SInt32 x, SInt32 y, bool visible) {
+    return kIOReturnSuccess;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Additional IOFramebuffer overrides — NDRV displacement support
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+IOReturn FakeIrisXEFramebuffer::getAttribute(IOSelect attribute, uintptr_t *value) {
+    if (!value) return kIOReturnBadArgument;
+    return KEXT_SUPER::getAttribute(attribute, value);
+}
+
+IOReturn FakeIrisXEFramebuffer::setAttribute(IOSelect attribute, uintptr_t value) {
+    return KEXT_SUPER::setAttribute(attribute, value);
+}
+
+IOReturn FakeIrisXEFramebuffer::registerForInterruptType(IOSelect interruptType,
+                                                          IOFBInterruptProc proc,
+                                                          OSObject *target,
+                                                          void *ref,
+                                                          void **interruptRef) {
+    if (interruptType != kIOFBVBLInterruptType)
+        return kIOReturnUnsupported;
+
+    if (!_interruptList) return kIOReturnNotReady;
+
+    FXEInterruptInfo *info = (FXEInterruptInfo*)IOMalloc(sizeof(FXEInterruptInfo));
+    if (!info) return kIOReturnNoMemory;
+
+    info->proc   = proc;
+    info->target = target;
+    info->ref    = ref;
+
+    OSData *data = OSData::withBytes(info, sizeof(FXEInterruptInfo));
+    if (data) {
+        _interruptList->setObject(data);
+        data->release();
+        *interruptRef = info;
+
+        /* Start VSync timer when first interrupt is registered */
+        if (!_vsyncTimer) {
+            IOWorkLoop *wl = getWorkLoop();
+            if (wl) {
+                _vsyncTimer = IOTimerEventSource::timerEventSource(this, vsyncTimerFired);
+                if (_vsyncTimer && wl->addEventSource(_vsyncTimer) == kIOReturnSuccess) {
+                    _vsyncTimer->setTimeoutMS(16);
+                    LOG("VSync timer started at 60Hz");
+                }
+            }
+        }
+        return kIOReturnSuccess;
+    }
+    IOFree(info, sizeof(FXEInterruptInfo));
+    return kIOReturnNoMemory;
+}
+
+IOReturn FakeIrisXEFramebuffer::unregisterInterrupt(void *interruptRef) {
+    return kIOReturnSuccess;
+}
+
+bool FakeIrisXEFramebuffer::hasDDCConnect(IOIndex connectIndex) { return false; }
+
+IOReturn FakeIrisXEFramebuffer::getDDCBlock(IOIndex connectIndex, UInt32 blockNumber,
+                                             IOSelect blockType, IOOptionBits options,
+                                             UInt8 *data, IOByteCount *length) {
     return kIOReturnUnsupported;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Stolen memory helpers (used by GEM for GGTT bootstrap)
+ * Power management
  * ═══════════════════════════════════════════════════════════════════════ */
+
+IOReturn FakeIrisXEFramebuffer::setPowerState(unsigned long powerStateOrdinal,
+                                               IOService *whatDevice) {
+    return IOPMAckImplied;
+}
+
+unsigned long FakeIrisXEFramebuffer::maxCapabilityForDomainState(IOPMPowerFlags domainState) {
+    if (domainState & kIOPMPowerOn) return 3;
+    if (domainState & kIOPMDoze) return 2;
+    return 0;
+}
+
+unsigned long FakeIrisXEFramebuffer::initialPowerStateForDomainState(IOPMPowerFlags domainState) {
+    return 3;
+}
+
+IOReturn FakeIrisXEFramebuffer::powerStateWillChangeTo(IOPMPowerFlags capabilities,
+                                                        unsigned long stateNumber,
+                                                        IOService *whatDevice) {
+    return IOPMAckImplied;
+}
+
+IOReturn FakeIrisXEFramebuffer::powerStateDidChangeTo(IOPMPowerFlags capabilities,
+                                                       unsigned long stateNumber,
+                                                       IOService *whatDevice) {
+    return IOPMAckImplied;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * VSync interrupt delivery
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* static */ void FakeIrisXEFramebuffer::vsyncTimerFired(OSObject *owner, IOTimerEventSource *sender) {
+    FakeIrisXEFramebuffer *self = OSDynamicCast(FakeIrisXEFramebuffer, owner);
+    if (self) {
+        self->fireVSyncInterrupt();
+        if (sender) sender->setTimeoutMS(16);
+    }
+}
+
+void FakeIrisXEFramebuffer::fireVSyncInterrupt() {
+    /* Re-write PLANE_SURF to trigger display update */
+    if (_mmioBase && _displayInit) {
+        mmioWrite32(0x7019C, 0x800);
+        (void)mmioRead32(0x7019C);
+    }
+
+    /* Call all registered VSync handlers */
+    if (_interruptList) {
+        for (unsigned int i = 0; i < _interruptList->getCount(); i++) {
+            OSData *data = OSDynamicCast(OSData, _interruptList->getObject(i));
+            if (data) {
+                FXEInterruptInfo *info = (FXEInterruptInfo*)data->getBytesNoCopy();
+                if (info && info->proc) {
+                    (info->proc)(info->target, info->ref);
+                }
+            }
+        }
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Force GUI transition (console → WindowServer)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* static */ void FakeIrisXEFramebuffer::forceGUITimerFired(OSObject *target, IOTimerEventSource *sender) {
+    FakeIrisXEFramebuffer *fb = OSDynamicCast(FakeIrisXEFramebuffer, target);
+    if (fb) {
+        fb->forceGUITransition();
+        if (sender) sender->cancelTimeout();
+    }
+}
+
+void FakeIrisXEFramebuffer::forceGUITransition() {
+    LOG("forceGUITransition — unlocking console for WindowServer");
+
+    setProperty("IOFBOnline", kOSBooleanTrue);
+    setProperty("online", kOSBooleanTrue);
+    setProperty("IOFBIsMainDisplay", kOSBooleanTrue);
+    setProperty("AAPL,boot-display", kOSBooleanTrue);
+    setProperty("IOFBCPUAccessable", kOSBooleanTrue);
+    setProperty("IOFBMemoryAccessable", kOSBooleanTrue);
+    setProperty("IOFramebufferConsoleKey", kOSBooleanFalse);
+    setProperty("IOConsoleUsers", kOSBooleanTrue);
+    setProperty("IOScreenLockState", (unsigned long long)0, 32);
+
+    /* Trigger display refresh */
+    if (_mmioBase) {
+        mmioWrite32(0x7019C, 0x800);
+        (void)mmioRead32(0x7019C);
+    }
+
+    LOG("forceGUITransition complete");
+}
 
 IOPhysicalAddress FakeIrisXEFramebuffer::getStolenMemBase() {
     uint32_t bgsm = _pciDevice->configRead32(0xC4); /* DSM base */
@@ -1152,3 +1357,4 @@ size_t FakeIrisXEFramebuffer::getStolenMemSize() {
     };
     return sizes[sizeIdx] * 1024 * 1024;
 }
+

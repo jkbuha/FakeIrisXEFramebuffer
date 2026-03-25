@@ -1,9 +1,6 @@
 /* FakeIrisXEFramebuffer.hpp
- * IOFramebuffer subclass for Tiger Lake Iris Xe iGPU on macOS Sequoia
- *
- * Matches PCI device 0x9A498086 via IOPCIPrimaryMatch.
- * Provides: MMIO access, GT power, display pipeline (Pipe A / Trans A / Plane 1A),
- *           and acts as IOProvider for FakeIrisXEAccelerator.
+ * IOFramebuffer subclass for Intel Tiger Lake Iris Xe iGPU
+ * Complete IOFramebuffer implementation (pawan architecture + our HW init)
  */
 
 #ifndef FAKEIRISXEFRAMEBUFFER_HPP
@@ -11,44 +8,35 @@
 
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
-#include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IOTimerEventSource.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/graphics/IOFramebuffer.h>
 #include <IOKit/graphics/IODisplay.h>
 
-#include "i915_reg.h"
-
-/* -----------------------------------------------------------------------
- * Forward declarations
- * --------------------------------------------------------------------- */
+/* Forward declarations */
 class FakeIrisXEGuC;
 class FakeIrisXEExeclist;
 class FakeIrisXEGEM;
 
-/* -----------------------------------------------------------------------
- * Display timing for 1920×1080 @ 60 Hz (eDP)
- * --------------------------------------------------------------------- */
-struct TGLDisplayTiming {
-    uint32_t hActive;
-    uint32_t hBlankStart;
-    uint32_t hBlankEnd;
-    uint32_t hSyncStart;
-    uint32_t hSyncEnd;
-    uint32_t hTotal;
-
-    uint32_t vActive;
-    uint32_t vBlankStart;
-    uint32_t vBlankEnd;
-    uint32_t vSyncStart;
-    uint32_t vSyncEnd;
-    uint32_t vTotal;
-
-    uint32_t pixelClock_kHz;  /* 148500 for 1080p60 */
+/* Display mode info structure */
+struct FXEDisplayModeInfo {
+    IODisplayModeID   modeID;
+    uint32_t          width;
+    uint32_t          height;
+    uint32_t          refreshRate;
+    IOTimingInformation timing;
 };
 
-/* -----------------------------------------------------------------------
- * FakeIrisXEFramebuffer
- * --------------------------------------------------------------------- */
+/* VBlank interrupt info */
+struct FXEInterruptInfo {
+    IOFBInterruptProc proc;
+    OSObject         *target;
+    void             *ref;
+};
+
+static const uint32_t kFXEMaxModes = 16;
+
 class FakeIrisXEFramebuffer : public IOFramebuffer {
     OSDeclareDefaultStructors(FakeIrisXEFramebuffer)
 
@@ -59,17 +47,9 @@ public:
     virtual void        stop(IOService *provider) override;
     virtual void        free() override;
 
-    /* IOFramebuffer API — signatures match Tahoe/Sequoia SDK IOFramebuffer.h
-     * Key changes vs older SDKs:
-     *   getPixelFormats()    -> const char* (void)
-     *   getDisplayModeCount()-> IOItemCount (void)
-     *   getApertureRange()   -> IODeviceMemory* [pure virtual, must implement]
-     *   getPixelFormatsForDisplayMode() no longer exists
-     */
+    /* IOFramebuffer API — complete implementation */
     virtual IOReturn         enableController() override;
     virtual IOItemCount      getConnectionCount() override;
-
-    /* Pure virtuals — all three must be implemented */
     virtual IODeviceMemory * getApertureRange(IOPixelAperture aperture) override;
     virtual const char *     getPixelFormats(void) override;
     virtual IOItemCount      getDisplayModeCount(void) override;
@@ -98,14 +78,37 @@ public:
                                                IOIndex *depth) override;
     virtual IOReturn    setCursorImage(void *cursorImage) override;
     virtual IOReturn    setCursorState(SInt32 x, SInt32 y, bool visible) override;
-    /* getPixelFormatsForDisplayMode — pure virtual in Tahoe SDK IOFramebuffer.
-     * Returns a bitmask of supported pixel format indices for the given mode/depth. */
     virtual UInt64      getPixelFormatsForDisplayMode(IODisplayModeID displayMode,
                                                        IOIndex depth) override;
-
     virtual IOReturn    connectFlags(IOIndex connectIndex,
                                      IODisplayModeID displayMode,
                                      IOOptionBits *flags) override;
+
+    /* Additional IOFramebuffer overrides — required for NDRV displacement */
+    virtual IOReturn    getAttribute(IOSelect attribute, uintptr_t *value) override;
+    virtual IOReturn    setAttribute(IOSelect attribute, uintptr_t value) override;
+    virtual IOReturn    registerForInterruptType(IOSelect interruptType,
+                                                  IOFBInterruptProc proc,
+                                                  OSObject *target,
+                                                  void *ref,
+                                                  void **interruptRef) override;
+    virtual IOReturn    unregisterInterrupt(void *interruptRef) override;
+    virtual bool        hasDDCConnect(IOIndex connectIndex) override;
+    virtual IOReturn    getDDCBlock(IOIndex connectIndex, UInt32 blockNumber,
+                                    IOSelect blockType, IOOptionBits options,
+                                    UInt8 *data, IOByteCount *length) override;
+
+    /* Power management */
+    virtual IOReturn    setPowerState(unsigned long powerStateOrdinal,
+                                      IOService *whatDevice) override;
+    virtual unsigned long maxCapabilityForDomainState(IOPMPowerFlags domainState) override;
+    virtual unsigned long initialPowerStateForDomainState(IOPMPowerFlags domainState) override;
+    virtual IOReturn    powerStateWillChangeTo(IOPMPowerFlags capabilities,
+                                                unsigned long stateNumber,
+                                                IOService *whatDevice) override;
+    virtual IOReturn    powerStateDidChangeTo(IOPMPowerFlags capabilities,
+                                               unsigned long stateNumber,
+                                               IOService *whatDevice) override;
 
     /* MMIO access — public so subsystems (GuC, Execlist) can use */
     uint32_t            mmioRead32(uint32_t offset);
@@ -144,6 +147,14 @@ private:
     uint32_t            waitBits(uint32_t offset, uint32_t mask,
                                  uint32_t expected, uint32_t timeoutMs);
 
+    /* VSync interrupt delivery */
+    void                fireVSyncInterrupt();
+    static void         vsyncTimerFired(OSObject *owner, IOTimerEventSource *sender);
+
+    /* GUI transition (pawan's console→GUI unlock) */
+    void                forceGUITransition();
+    static void         forceGUITimerFired(OSObject *target, IOTimerEventSource *sender);
+
     /* State */
     IOPCIDevice *       _pciDevice    = nullptr;
     IOMemoryMap *       _mmioMap      = nullptr;
@@ -155,8 +166,17 @@ private:
     IOPhysicalAddress          _fbPhysAddr = 0;
     void *                     _fbVirtAddr = nullptr;
     size_t                     _fbSize     = 0;
-    IOBufferMemoryDescriptor * _cursorMem  = nullptr;
 
+    /* WindowServer memory descriptors */
+    IOBufferMemoryDescriptor * _cursorMem  = nullptr;
+    IODeviceMemory *           _vramRange  = nullptr;
+
+    /* VSync / interrupt support */
+    OSArray *                  _interruptList  = nullptr;
+    IOTimerEventSource *       _vsyncTimer     = nullptr;
+    IOTimerEventSource *       _forceGUITimer  = nullptr;
+
+    /* Subsystems */
     FakeIrisXEGuC *     _guc      = nullptr;
     FakeIrisXEExeclist * _execlist = nullptr;
     FakeIrisXEGEM *     _gem      = nullptr;
@@ -167,17 +187,13 @@ private:
 
     IODisplayModeID     _currentMode  = 1;
     IOIndex             _currentDepth = 0;
+    IOLock *            _lock         = nullptr;
 
     /* Display constants */
     static const uint32_t kDisplayWidth  = 1920;
     static const uint32_t kDisplayHeight = 1080;
     static const uint32_t kBytesPerPixel = 4;
-    static const uint32_t kStride        = kDisplayWidth * kBytesPerPixel; /* 7680 */
-
-    /* NDRV displacement state */
-    volatile bool         _flipRunning   = false;
-    uint32_t              _flipGGTTOff   = 0;
-    uint32_t              _flipPlaneCtl  = 0;
+    static const uint32_t kStride        = kDisplayWidth * kBytesPerPixel;
 };
 
 #endif /* FAKEIRISXEFRAMEBUFFER_HPP */
