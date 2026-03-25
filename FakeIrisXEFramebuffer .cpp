@@ -43,16 +43,7 @@ bool FakeIrisXEFramebuffer::init(OSDictionary *dict) {
 }
 
 bool FakeIrisXEFramebuffer::start(IOService *provider) {
-    LOG("start — deferring all hardware access to enableController()");
-
-    /* IMPORTANT: Do NOT touch hardware in start().
-     * The kernel boot thread calls start() very early — before the display
-     * subsystem is ready and before FORCEWAKE is safe to assert.
-     * Any waitBits() loop here will hang the boot indefinitely.
-     *
-     * All GT init, power wells, framebuffer alloc, display pipeline, and GuC
-     * are deferred to enableController() which WindowServer calls later.
-     */
+    LOG("start — allocating framebuffer before super::start()");
 
     _pciDevice = OSDynamicCast(IOPCIDevice, provider);
     if (!_pciDevice) {
@@ -68,7 +59,27 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
         return false;
     }
 
-    /* Register with IOKit — this is all start() should do */
+    /* Allocate framebuffer in start() — MUST be available before super::start()
+     * calls enableController()/getApertureRange(). Pawan does the same. */
+    {
+        const uint32_t fbSize = 32 * 1024 * 1024;
+        _fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+            kernel_task,
+            kIODirectionInOut | kIOMemoryKernelUserShared,
+            fbSize,
+            0x000000003FFFF000ULL
+        );
+        if (!_fbMem || _fbMem->prepare() != kIOReturnSuccess) {
+            ERR("Framebuffer allocation failed");
+            if (_fbMem) { _fbMem->release(); _fbMem = nullptr; }
+            return false;
+        }
+        _fbPhysAddr = _fbMem->getPhysicalAddress();
+        _fbSize = fbSize;
+        LOG("start: FB allocated phys=0x%llx size=%u", (uint64_t)_fbPhysAddr, fbSize);
+    }
+
+    /* Register with IOKit — super::start() will call enableController() */
     if (!KEXT_SUPER::start(provider)) {
         ERR("super::start failed");
         return false;
@@ -106,7 +117,7 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
             setProperty("FXE-PLLAfter",    (uint64_t)mmioRead32(0x46070), 32);
         }
     }
-    LOG("start complete — enableController() called by WindowServer or fxe_test");
+    LOG("start complete");
     return true;
 }
 
@@ -879,18 +890,12 @@ IOReturn FakeIrisXEFramebuffer::enableController() {
         const uint32_t PLANE_SIZE_1_A   = 0x70190;
         const uint32_t PLANE_POS_1_A    = 0x7018C;
 
-        /* Allocate framebuffer (32MB) */
-        const uint32_t fbSize = 32 * 1024 * 1024;
+        /* Use framebuffer allocated in start() */
+        const uint32_t fbSize = (uint32_t)_fbSize;
         const uint32_t fbGGTTOffset = 0x800;
-        IOBufferMemoryDescriptor* fbMem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-            kernel_task,
-            kIODirectionInOut | kIOMemoryKernelUserShared,
-            fbSize,
-            0x000000003FFFF000ULL
-        );
-        if (!fbMem || fbMem->prepare() != kIOReturnSuccess) {
-            ERR("enableController: FB alloc failed");
-            if (fbMem) { fbMem->release(); }
+        IOBufferMemoryDescriptor* fbMem = _fbMem;
+        if (!fbMem) {
+            ERR("enableController: _fbMem not allocated in start()");
             break;
         }
         setProperty("FXE-EC-FB-PHYS", (uint64_t)fbMem->getPhysicalAddress(), 64);
