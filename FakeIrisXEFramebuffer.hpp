@@ -155,6 +155,7 @@ private:
     IOPhysicalAddress          _fbPhysAddr = 0;
     void *                     _fbVirtAddr = nullptr;
     size_t                     _fbSize     = 0;
+    IOBufferMemoryDescriptor * _cursorMem  = nullptr;
 
     FakeIrisXEGuC *     _guc      = nullptr;
     FakeIrisXEExeclist * _execlist = nullptr;

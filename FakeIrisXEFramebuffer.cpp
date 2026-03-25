@@ -45,15 +45,6 @@ bool FakeIrisXEFramebuffer::init(OSDictionary *dict) {
 bool FakeIrisXEFramebuffer::start(IOService *provider) {
     LOG("start — deferring all hardware access to enableController()");
 
-    /* IMPORTANT: Do NOT touch hardware in start().
-     * The kernel boot thread calls start() very early — before the display
-     * subsystem is ready and before FORCEWAKE is safe to assert.
-     * Any waitBits() loop here will hang the boot indefinitely.
-     *
-     * All GT init, power wells, framebuffer alloc, display pipeline, and GuC
-     * are deferred to enableController() which WindowServer calls later.
-     */
-
     _pciDevice = OSDynamicCast(IOPCIDevice, provider);
     if (!_pciDevice) {
         ERR("provider is not IOPCIDevice");
@@ -61,20 +52,17 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
     }
     _pciDevice->retain();
 
-    /* Map BAR0 now — safe, just memory mapping, no register access */
     if (mapMMIO() != kIOReturnSuccess) {
         ERR("MMIO mapping failed");
         OSSafeReleaseNULL(_pciDevice);
         return false;
     }
 
-    /* Register with IOKit — this is all start() should do */
     if (!KEXT_SUPER::start(provider)) {
         ERR("super::start failed");
         return false;
     }
 
-    /* CD clock diagnostic — publish to IORegistry so it survives log silence */
     {
         uint32_t cdclk  = mmioRead32(0x46000);
         uint32_t dssm   = mmioRead32(0x51004);
@@ -87,7 +75,6 @@ bool FakeIrisXEFramebuffer::start(IOService *provider) {
         setProperty("FXE-RefClkIdx",  (uint64_t)refclk,  8);
     }
 
-    /* Reprogram CD clock if below 648 MHz — safe to do in start() */
     {
         uint32_t cdfreq = mmioRead32(0x46000) & 0x7FF;
         if (cdfreq < 0x50E) {
