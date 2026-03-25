@@ -1076,9 +1076,8 @@ IOReturn FakeIrisXEFramebuffer::getTimingInfoForDisplayMode(IODisplayModeID mode
     if (!info || modeID != kModeID_1080p) return kIOReturnBadArgument;
 
     memset(info, 0, sizeof(*info));
-    /* timingCEA861_1920x1080p60 not in Tahoe SDK headers — use raw value 0x57 */
+    /* 1920x1080 @ 60Hz CEA-861 */
     info->appleTimingID = (IOAppleTimingID)0x57;
-    /* Detailed timing */
     info->detailedInfo.v2.horizontalActive          = kDisplayWidth;
     info->detailedInfo.v2.horizontalBlanking        = 280;
     info->detailedInfo.v2.horizontalSyncOffset      = 88;
